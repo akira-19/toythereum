@@ -1,6 +1,7 @@
 mod evm;
+mod parser;
 mod state;
 
 fn main() {
-    println!("Hello, world!");
+    parser::parse();
 }
