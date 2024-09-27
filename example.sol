@@ -1,4 +1,4 @@
-function add(uint256 a, uint256 b) returns (uint256) {
+function add(uint256 a, str b) returns (uint256) {
     return a + b;
 }
 
