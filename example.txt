@@ -1,0 +1,3 @@
+var a:i64 = 1;
+var b:i64 = 2;
+print(a+b);
