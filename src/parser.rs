@@ -799,7 +799,7 @@ fn general_statement<'a>() -> impl Fn(Span<'a>) -> IResult<Span<'a>, Statement> 
     }
 }
 
-pub(crate) fn statement(input: Span) -> IResult<Span, Statement> {
+pub fn statement(input: Span) -> IResult<Span, Statement> {
     general_statement()(input)
 }
 
@@ -810,7 +810,13 @@ pub fn statements(i: Span) -> IResult<Span, Statements> {
     Ok((i, stmts))
 }
 
+fn contract(i: Span) -> IResult<Span, Statements> {
+    let (i, _) = space_delimited(tag("contract"))(i)?;
+    let (i, _) = space_delimited(identifier)(i)?;
+    delimited(open_brace, statements, close_brace)(i)
+}
+
 pub fn statements_finish(i: Span) -> Result<Statements, nom::error::Error<Span>> {
-    let (_, res) = statements(i).finish()?;
+    let (_, res) = contract(i).finish()?;
     Ok(res)
 }

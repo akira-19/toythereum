@@ -1,5 +1,7 @@
-function test(uint256 a, uint256 b) returns(bool) {
-   a < b;
+contract TestContract{
+  function test(uint256 a, uint256 b) returns(bool) {
+    return a < b;
+  }
 }
 
-test(1,2);
+
