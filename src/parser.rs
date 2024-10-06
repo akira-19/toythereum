@@ -304,7 +304,6 @@ pub fn type_check<'src>(
     stmts: &Vec<Statement<'src>>,
     ctx: &mut TypeCheckContext<'src, '_>,
 ) -> Result<Option<TypeDecl>, TypeCheckError<'src>> {
-    let mut res = None;
     for stmt in stmts {
         match stmt {
             Statement::VarDef { name, td, ex, .. } => {
@@ -344,14 +343,14 @@ pub fn type_check<'src>(
                 tc_check_type(&last_stmt, ret_type, stmts.span())?;
             }
             Statement::Expression(e) => {
-                res = tc_expr(&e, ctx)?;
+                tc_expr(&e, ctx)?;
             }
             Statement::Return(e) => {
                 return tc_expr(e, ctx);
             }
         }
     }
-    Ok(res)
+    Ok(None)
 }
 
 pub enum FnDecl<'src> {
@@ -784,14 +783,10 @@ fn return_statement(i: Span) -> IResult<Span, Statement> {
     Ok((i, Statement::Return(ex)))
 }
 
-fn general_statement<'a>(last: bool) -> impl Fn(Span<'a>) -> IResult<Span<'a>, Statement> {
+fn general_statement<'a>() -> impl Fn(Span<'a>) -> IResult<Span<'a>, Statement> {
     let terminator = move |i| -> IResult<Span, ()> {
         let mut semicolon = pair(tag(";"), multispace0);
-        if last {
-            Ok((opt(semicolon)(i)?.0, ()))
-        } else {
-            Ok((semicolon(i)?.0, ()))
-        }
+        Ok((semicolon(i)?.0, ()))
     };
     move |input| {
         alt((
@@ -804,21 +799,14 @@ fn general_statement<'a>(last: bool) -> impl Fn(Span<'a>) -> IResult<Span<'a>, S
     }
 }
 
-pub(crate) fn last_statement(input: Span) -> IResult<Span, Statement> {
-    general_statement(true)(input)
-}
-
 pub(crate) fn statement(input: Span) -> IResult<Span, Statement> {
-    general_statement(false)(input)
+    general_statement()(input)
 }
 
 pub fn statements(i: Span) -> IResult<Span, Statements> {
-    let (i, mut stmts) = many0(statement)(i)?;
-    let (i, last) = opt(last_statement)(i)?;
+    let (i, stmts) = many0(statement)(i)?;
     let (i, _) = opt(multispace0)(i)?;
-    if let Some(last) = last {
-        stmts.push(last);
-    }
+
     Ok((i, stmts))
 }
 
