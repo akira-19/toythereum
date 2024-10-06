@@ -124,8 +124,7 @@ impl EVM {
     fn op_mstore(&mut self) {
         let offset = self.stack.pop().as_u32() as usize;
         let value = self.stack.pop();
-        let mut value_bytes = [0u8; 32];
-        value.to_big_endian(&mut value_bytes);
+        let value_bytes = value.to_big_endian();
         for (i, byte) in value_bytes.iter().enumerate() {
             self.memory.insert(offset + i, *byte);
         }

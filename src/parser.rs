@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{Read, Write},
 };
 
 use nom_locate::LocatedSpan;
@@ -10,35 +10,33 @@ use nom_locate::LocatedSpan;
 use nom::{
     branch::alt,
     bytes::complete::tag,
-    character::complete::{alpha1, alphanumeric1, char, multispace0, multispace1, none_of},
+    character::complete::{alpha1, alphanumeric1, char, digit1, multispace0, multispace1, none_of},
     combinator::{cut, map_res, opt, recognize},
     error::ParseError,
     multi::{fold_many0, many0, separated_list0},
-    number::complete::recognize_float,
     sequence::{delimited, pair, preceded, terminated},
     Finish, IResult, InputTake, Offset, Parser,
 };
+use primitive_types::U256;
 
 use crate::compiler::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    F64(f64),
-    I64(i64),
+    Uint256(U256),
     Str(String),
 }
 
 impl Default for Value {
     fn default() -> Self {
-        Self::F64(0.)
+        Self::Uint256(U256::zero())
     }
 }
 
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::F64(value) => write!(f, "{value}"),
-            Self::I64(value) => write!(f, "{value}"),
+            Self::Uint256(value) => write!(f, "{value}"),
             Self::Str(value) => write!(f, "{value}"),
         }
     }
@@ -47,8 +45,7 @@ impl Display for Value {
 impl Value {
     pub fn kind(&self) -> ValueKind {
         match self {
-            Self::F64(_) => ValueKind::F64,
-            Self::I64(_) => ValueKind::I64,
+            Self::Uint256(_) => ValueKind::Uint256,
             Self::Str(_) => ValueKind::Str,
         }
     }
@@ -57,11 +54,8 @@ impl Value {
         let kind = self.kind() as u8;
         writer.write_all(&[kind])?;
         match self {
-            Self::F64(value) => {
-                writer.write_all(&value.to_le_bytes())?;
-            }
-            Self::I64(value) => {
-                writer.write_all(&value.to_le_bytes())?;
+            Self::Uint256(value) => {
+                writer.write_all(&value.to_little_endian())?;
             }
             Self::Str(value) => {
                 serialize_str(value, writer)?;
@@ -72,22 +66,16 @@ impl Value {
 
     #[allow(non_upper_case_globals)]
     pub fn deserialize(reader: &mut impl Read) -> std::io::Result<Self> {
-        const F64: u8 = ValueKind::F64 as u8;
-        const I64: u8 = ValueKind::I64 as u8;
+        const Uint256: u8 = ValueKind::Uint256 as u8;
         const Str: u8 = ValueKind::Str as u8;
 
         let mut kind_buf = [0u8; 1];
         reader.read_exact(&mut kind_buf)?;
         match kind_buf[0] {
-            F64 => {
-                let mut buf = [0u8; std::mem::size_of::<f64>()];
+            Uint256 => {
+                let mut buf = [0u8; 32];
                 reader.read_exact(&mut buf)?;
-                Ok(Value::F64(f64::from_le_bytes(buf)))
-            }
-            I64 => {
-                let mut buf = [0u8; std::mem::size_of::<i64>()];
-                reader.read_exact(&mut buf)?;
-                Ok(Value::I64(i64::from_le_bytes(buf)))
+                Ok(Value::Uint256(U256::from_little_endian(&buf)))
             }
             Str => Ok(Value::Str(deserialize_str(reader)?)),
             _ => Err(std::io::Error::new(
@@ -99,36 +87,11 @@ impl Value {
             )),
         }
     }
-
-    pub fn coerce_f64(&self) -> f64 {
-        match self {
-            Self::F64(value) => *value,
-            Self::I64(value) => *value as f64,
-            _ => panic!("Coercion failed: {:?} cannot be coerced to f64", self),
-        }
-    }
-
-    pub fn coerce_i64(&self) -> i64 {
-        match self {
-            Self::F64(value) => *value as i64,
-            Self::I64(value) => *value,
-            _ => panic!("Coercion failed: {:?} cannot be coerced to i64", self),
-        }
-    }
-
-    pub fn coerce_str(&self) -> String {
-        match self {
-            Self::F64(value) => format!("{value}"),
-            Self::I64(value) => format!("{value}"),
-            Self::Str(value) => value.clone(),
-        }
-    }
 }
 
 #[repr(u8)]
 pub enum ValueKind {
-    F64,
-    I64,
+    Uint256,
     Str,
 }
 
@@ -137,8 +100,7 @@ pub type Span<'a> = LocatedSpan<&'a str>;
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum TypeDecl {
     Any,
-    F64,
-    I64,
+    Uint256,
     Str,
 }
 
@@ -151,9 +113,7 @@ pub fn tc_coerce_type<'src>(
     Ok(match (value, target) {
         (_, Any) => value.clone(),
         (Any, _) => target.clone(),
-        (F64 | I64, F64) => F64,
-        (F64, I64) => F64,
-        (I64, I64) => I64,
+        (Uint256, Uint256) => Uint256,
         (Str, Str) => Str,
         _ => {
             return Err(TypeCheckError::new(
@@ -259,8 +219,7 @@ pub fn binary_op_type(lhs: &TypeDecl, rhs: &TypeDecl) -> Result<TypeDecl, ()> {
     Ok(match (lhs, rhs) {
         (Any, _) => Any,
         (_, Any) => Any,
-        (I64, I64) => I64,
-        (F64 | I64, F64 | I64) => F64,
+        (Uint256, Uint256) => Uint256,
         (Str, Str) => Str,
         _ => return Err(()),
     })
@@ -276,11 +235,10 @@ pub fn tc_binary_cmp<'src>(
     let lhst = tc_expr(lhs, ctx)?;
     let rhst = tc_expr(rhs, ctx)?;
     Ok(match (&lhst, &rhst) {
-        (Any, _) => I64,
-        (_, Any) => I64,
-        (F64, F64) => I64,
-        (I64, I64) => I64,
-        (Str, Str) => I64,
+        (Any, _) => Uint256,
+        (_, Any) => Uint256,
+        (Uint256, Uint256) => Uint256,
+        (Str, Str) => Uint256,
         _ => {
             return Err(TypeCheckError::new(
                 format!(
@@ -299,7 +257,7 @@ pub fn tc_expr<'src>(
 ) -> Result<TypeDecl, TypeCheckError<'src>> {
     use ExprEnum::*;
     Ok(match &e.expr {
-        NumLiteral(_val) => TypeDecl::F64,
+        NumLiteral(_val) => TypeDecl::Uint256,
         StrLiteral(_val) => TypeDecl::Str,
         Ident(str) => ctx.get_var(str).ok_or_else(|| {
             TypeCheckError::new(format!("Variable {:?} not found in scope", str), e.span)
@@ -325,7 +283,7 @@ pub fn tc_expr<'src>(
         Lt(lhs, rhs) => tc_binary_cmp(&lhs, &rhs, ctx, "LT")?,
         Gt(lhs, rhs) => tc_binary_cmp(&lhs, &rhs, ctx, "GT")?,
         If(cond, true_branch, false_branch) => {
-            tc_coerce_type(&tc_expr(cond, ctx)?, &TypeDecl::I64, cond.span)?;
+            tc_coerce_type(&tc_expr(cond, ctx)?, &TypeDecl::Uint256, cond.span)?;
             let true_type = type_check(true_branch, ctx)?;
             if let Some(false_branch) = false_branch {
                 let false_type = type_check(false_branch, ctx)?;
@@ -397,9 +355,9 @@ pub fn type_check<'src>(
                 stmts,
                 ..
             } => {
-                tc_coerce_type(&tc_expr(start, ctx)?, &TypeDecl::I64, start.span)?;
-                tc_coerce_type(&tc_expr(end, ctx)?, &TypeDecl::I64, end.span)?;
-                ctx.vars.insert(loop_var, TypeDecl::I64);
+                tc_coerce_type(&tc_expr(start, ctx)?, &TypeDecl::Uint256, start.span)?;
+                tc_coerce_type(&tc_expr(end, ctx)?, &TypeDecl::Uint256, end.span)?;
+                ctx.vars.insert(loop_var, TypeDecl::Uint256);
                 res = type_check(stmts, ctx)?;
             }
             Statement::Return(e) => {
@@ -453,7 +411,7 @@ pub struct NativeFn<'src> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum ExprEnum<'src> {
     Ident(Span<'src>),
-    NumLiteral(f64),
+    NumLiteral(U256),
     StrLiteral(String),
     FnInvoke(Span<'src>, Vec<Expression<'src>>),
     Add(Box<Expression<'src>>, Box<Expression<'src>>),
@@ -613,7 +571,7 @@ fn str_literal(i: Span) -> IResult<Span, Expression> {
 }
 
 fn num_literal(input: Span) -> IResult<Span, Expression> {
-    let (r, v) = space_delimited(recognize_float)(input)?;
+    let (r, v) = space_delimited(digit1)(input)?;
     Ok((
         r,
         Expression::new(
@@ -799,8 +757,7 @@ fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
     Ok((
         i,
         match *td.fragment() {
-            "i64" => TypeDecl::I64,
-            "f64" => TypeDecl::F64,
+            "uint256" => TypeDecl::Uint256,
             "str" => TypeDecl::Str,
             _ => {
                 return Err(nom::Err::Failure(nom::error::Error::new(

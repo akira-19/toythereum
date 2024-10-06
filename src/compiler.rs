@@ -7,6 +7,8 @@ use std::{
     io::{BufReader, BufWriter, Read, Write},
 };
 
+use primitive_types::U256;
+
 use crate::parser::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -411,7 +413,7 @@ impl Compiler {
     fn compile_expr(&mut self, ex: &Expression) -> Result<StkIdx, Box<dyn Error>> {
         Ok(match &ex.expr {
             ExprEnum::NumLiteral(num) => {
-                let id = self.add_literal(Value::F64(*num));
+                let id = self.add_literal(Value::Uint256(*num));
                 self.add_load_literal_inst(id);
                 self.stack_top()
             }
@@ -563,7 +565,7 @@ impl Compiler {
                     self.loop_stack.push(LoopFrame::new(stk_loop_var));
                     self.compile_stmts(stmts)?;
                     self.fixup_continues()?;
-                    let one = self.add_literal(Value::F64(1.));
+                    let one = self.add_literal(Value::Uint256(U256::one()));
                     self.add_copy_inst(stk_loop_var);
                     self.add_load_literal_inst(one);
                     self.add_inst(OpCode::Add, 0);
@@ -630,7 +632,7 @@ impl Compiler {
 
     fn compile_stmts_or_zero(&mut self, stmts: &Statements) -> Result<StkIdx, Box<dyn Error>> {
         Ok(self.compile_stmts(stmts)?.unwrap_or_else(|| {
-            let id = self.add_literal(Value::F64(0.));
+            let id = self.add_literal(Value::Uint256(U256::zero()));
             self.add_load_literal_inst(id);
             self.stack_top()
         }))
@@ -685,26 +687,6 @@ fn write_program(source: &str, writer: &mut impl Write) -> Result<(), Box<dyn st
     compiler.write_funcs(writer)?;
 
     Ok(())
-}
-
-fn print_fn(args: &[Value]) -> Value {
-    for arg in args {
-        print!("{:?} ", arg);
-    }
-    println!("");
-    Value::F64(0.)
-}
-
-fn dbg_fn(values: &[Value]) -> Value {
-    println!("dbg: {:?}", values[0]);
-    Value::I64(0)
-}
-
-fn puts_fn(args: &[Value]) -> Value {
-    for arg in args {
-        print!("{}", arg);
-    }
-    Value::F64(0.)
 }
 
 struct ByteCode {
@@ -772,21 +754,10 @@ impl ByteCode {
                     let top = stack.last().unwrap().clone();
                     stack.extend((0..instruction.arg0).map(|_| top.clone()));
                 }
-                OpCode::Add => self.interpret_bin_op_str(
-                    &mut stack,
-                    |lhs, rhs| lhs + rhs,
-                    |lhs, rhs| lhs + rhs,
-                    |lhs, rhs| Some(format!("{lhs}{rhs}")),
-                ),
-                OpCode::Sub => {
-                    self.interpret_bin_op(&mut stack, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs)
-                }
-                OpCode::Mul => {
-                    self.interpret_bin_op(&mut stack, |lhs, rhs| lhs * rhs, |lhs, rhs| lhs * rhs)
-                }
-                OpCode::Div => {
-                    self.interpret_bin_op(&mut stack, |lhs, rhs| lhs / rhs, |lhs, rhs| lhs / rhs)
-                }
+                OpCode::Add => {}
+                OpCode::Sub => {}
+                OpCode::Mul => {}
+                OpCode::Div => {}
                 OpCode::Call => {
                     let args = &stack[stack.len() - instruction.arg0 as usize..];
                     let fname = &stack[stack.len() - instruction.arg0 as usize - 1];
@@ -794,7 +765,10 @@ impl ByteCode {
                         panic!("Function name shall be a string: {fname:?}");
                     };
                     let res = self.interpret(fname, args)?;
-                    stack.resize(stack.len() - instruction.arg0 as usize - 1, Value::F64(0.));
+                    stack.resize(
+                        stack.len() - instruction.arg0 as usize - 1,
+                        Value::Uint256(U256::zero()),
+                    );
                     stack.push(res);
                 }
                 OpCode::Jmp => {
@@ -803,16 +777,8 @@ impl ByteCode {
                 }
                 OpCode::Jf => {
                     let cond = stack.pop().expect("Jf needs an argument");
-                    if cond.coerce_f64() == 0. {
-                        ip = instruction.arg0 as usize;
-                        continue;
-                    }
                 }
-                OpCode::Lt => self.interpret_bin_op(
-                    &mut stack,
-                    |lhs, rhs| (lhs < rhs) as i32 as f64,
-                    |lhs, rhs| (lhs < rhs) as i64,
-                ),
+                OpCode::Lt => {}
                 OpCode::Pop => {
                     stack.resize(stack.len() - instruction.arg0 as usize, Value::default());
                 }
@@ -832,18 +798,15 @@ impl ByteCode {
     fn interpret_bin_op_str(
         &self,
         stack: &mut Vec<Value>,
-        op_f64: impl FnOnce(f64, f64) -> f64,
-        op_i64: impl FnOnce(i64, i64) -> i64,
+        op_uint256: impl FnOnce(U256, U256) -> U256,
         op_str: impl FnOnce(&str, &str) -> Option<String>,
     ) {
         use Value::*;
         let rhs = stack.pop().expect("Stack underflow");
         let lhs = stack.pop().expect("Stack underflow");
         let res = match (lhs, rhs) {
-            (F64(lhs), F64(rhs)) => F64(op_f64(lhs, rhs)),
-            (I64(lhs), I64(rhs)) => I64(op_i64(lhs, rhs)),
-            (F64(lhs), I64(rhs)) => F64(op_f64(lhs, rhs as f64)),
-            (I64(lhs), F64(rhs)) => F64(op_f64(lhs as f64, rhs)),
+            (Uint256(lhs), Uint256(rhs)) => Uint256(op_uint256(lhs, rhs)),
+
             (Str(lhs), Str(rhs)) => {
                 if let Some(res) = op_str(&lhs, &rhs) {
                     Str(res)
@@ -855,48 +818,6 @@ impl ByteCode {
         };
         stack.push(res);
     }
-
-    fn interpret_bin_op(
-        &self,
-        stack: &mut Vec<Value>,
-        op_f64: impl FnOnce(f64, f64) -> f64,
-        op_i64: impl FnOnce(i64, i64) -> i64,
-    ) {
-        self.interpret_bin_op_str(stack, op_f64, op_i64, |_, _| None)
-    }
-}
-
-fn unary_fn<'a>(f: fn(f64) -> f64) -> FnDecl<'a> {
-    FnDecl::Native(NativeFn {
-        args: vec![("lhs", TypeDecl::F64), ("rhs", TypeDecl::F64)],
-        ret_type: TypeDecl::F64,
-        code: Box::new(move |args| {
-            Value::F64(f(args
-                .into_iter()
-                .next()
-                .expect("function missing argument")
-                .coerce_f64()))
-        }),
-    })
-}
-
-fn binary_fn<'a>(f: fn(f64, f64) -> f64) -> FnDecl<'a> {
-    FnDecl::Native(NativeFn {
-        args: vec![("lhs", TypeDecl::F64), ("rhs", TypeDecl::F64)],
-        ret_type: TypeDecl::F64,
-        code: Box::new(move |args| {
-            let mut args = args.into_iter();
-            let lhs = args
-                .next()
-                .expect("function missing the first argument")
-                .coerce_f64();
-            let rhs = args
-                .next()
-                .expect("function missing the second argument")
-                .coerce_f64();
-            Value::F64(f(lhs, rhs))
-        }),
-    })
 }
 
 fn compile(writer: &mut impl Write, source: String) -> Result<(), Box<dyn std::error::Error>> {
@@ -918,84 +839,7 @@ type Functions<'src> = HashMap<String, FnDecl<'src>>;
 
 pub fn standard_functions<'src>() -> Functions<'src> {
     let mut funcs = Functions::new();
-    funcs.insert("sqrt".to_string(), unary_fn(f64::sqrt));
-    funcs.insert("sin".to_string(), unary_fn(f64::sin));
-    funcs.insert("cos".to_string(), unary_fn(f64::cos));
-    funcs.insert("tan".to_string(), unary_fn(f64::tan));
-    funcs.insert("asin".to_string(), unary_fn(f64::asin));
-    funcs.insert("acos".to_string(), unary_fn(f64::acos));
-    funcs.insert("atan".to_string(), unary_fn(f64::atan));
-    funcs.insert("atan2".to_string(), binary_fn(f64::atan2));
-    funcs.insert("pow".to_string(), binary_fn(f64::powf));
-    funcs.insert("exp".to_string(), unary_fn(f64::exp));
-    funcs.insert("log".to_string(), binary_fn(f64::log));
-    funcs.insert("log10".to_string(), unary_fn(f64::log10));
-    funcs.insert(
-        "print".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::Any,
-            code: Box::new(print_fn),
-        }),
-    );
-    funcs.insert(
-        "dbg".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::Any,
-            code: Box::new(dbg_fn),
-        }),
-    );
-    funcs.insert(
-        "puts".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::Any,
-            code: Box::new(puts_fn),
-        }),
-    );
-    funcs.insert(
-        "i64".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::I64,
-            code: Box::new(move |args| {
-                Value::I64(
-                    args.first()
-                        .expect("function missing argument")
-                        .coerce_i64(),
-                )
-            }),
-        }),
-    );
-    funcs.insert(
-        "f64".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::F64,
-            code: Box::new(move |args| {
-                Value::F64(
-                    args.first()
-                        .expect("function missing argument")
-                        .coerce_f64(),
-                )
-            }),
-        }),
-    );
-    funcs.insert(
-        "str".to_string(),
-        FnDecl::Native(NativeFn {
-            args: vec![("arg", TypeDecl::Any)],
-            ret_type: TypeDecl::Str,
-            code: Box::new(move |args| {
-                Value::Str(
-                    args.first()
-                        .expect("function missing argument")
-                        .coerce_str(),
-                )
-            }),
-        }),
-    );
+
     funcs
 }
 
