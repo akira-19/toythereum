@@ -685,16 +685,11 @@ fn expr(i: Span) -> IResult<Span, Expression> {
 
 fn var_def(i: Span) -> IResult<Span, Statement> {
     let span = i;
-    let (i, _) = delimited(multispace0, tag("var"), multispace1)(i)?;
-    let (i, (name, td, ex)) = cut(|i| {
-        let (i, name) = space_delimited(identifier)(i)?;
-        let (i, _) = space_delimited(char(':'))(i)?;
-        let (i, td) = type_decl(i)?;
-        let (i, _) = space_delimited(char('='))(i)?;
-        let (i, ex) = space_delimited(expr)(i)?;
-        let (i, _) = space_delimited(char(';'))(i)?;
-        Ok((i, (name, td, ex)))
-    })(i)?;
+    let (i, td) = space_delimited(type_decl)(i)?;
+    let (i, name) = space_delimited(identifier)(i)?;
+    let (i, _) = space_delimited(char('='))(i)?;
+    let (i, ex) = space_delimited(expr)(i)?;
+    let (i, _) = space_delimited(char(';'))(i)?;
     Ok((
         i,
         Statement::VarDef {
@@ -746,22 +741,20 @@ fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
 }
 
 fn argument(i: Span) -> IResult<Span, (Span, TypeDecl)> {
-    let (i, ident) = space_delimited(identifier)(i)?;
-    let (i, _) = char(':')(i)?;
     let (i, td) = type_decl(i)?;
+    let (i, ident) = space_delimited(identifier)(i)?;
 
     Ok((i, (ident, td)))
 }
 
 fn fn_def_statement(i: Span) -> IResult<Span, Statement> {
-    let (i, _) = space_delimited(tag("fn"))(i)?;
+    let (i, _) = space_delimited(tag("function"))(i)?;
     let (i, (name, args, ret_type, stmts)) = cut(|i| {
         let (i, name) = space_delimited(identifier)(i)?;
         let (i, _) = space_delimited(tag("("))(i)?;
         let (i, args) = separated_list0(char(','), space_delimited(argument))(i)?;
         let (i, _) = space_delimited(tag(")"))(i)?;
-        let (i, _) = space_delimited(tag("->"))(i)?;
-        let (i, ret_type) = type_decl(i)?;
+        let (i, ret_type) = opt(fn_return_def)(i)?;
         let (i, stmts) = delimited(open_brace, statements, close_brace)(i)?;
         Ok((i, (name, args, ret_type, stmts)))
     })(i)?;
@@ -770,10 +763,19 @@ fn fn_def_statement(i: Span) -> IResult<Span, Statement> {
         Statement::FnDef {
             name,
             args,
-            ret_type: Some(ret_type),
+            ret_type,
             stmts,
         },
     ))
+}
+
+fn fn_return_def(i: Span) -> IResult<Span, TypeDecl> {
+    let (i, _) = space_delimited(tag("returns"))(i)?;
+    let (i, _) = space_delimited(tag("("))(i)?;
+    let (i, td) = type_decl(i)?;
+    let (i, _) = space_delimited(tag(")"))(i)?;
+
+    Ok((i, td))
 }
 
 fn return_statement(i: Span) -> IResult<Span, Statement> {
@@ -793,11 +795,11 @@ fn general_statement<'a>(last: bool) -> impl Fn(Span<'a>) -> IResult<Span<'a>, S
     };
     move |input| {
         alt((
-            var_def,
-            var_assign,
             fn_def_statement,
             terminated(return_statement, terminator),
             terminated(expr_statement, terminator),
+            var_def,
+            var_assign,
         ))(input)
     }
 }

@@ -1,4 +1,4 @@
-fn test(a: uint256, b: uint256) -> bool {
+function test(uint256 a, uint256 b) returns (bool) {
   return a < b;
 }
 
