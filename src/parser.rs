@@ -25,6 +25,7 @@ use crate::compiler::*;
 pub enum Value {
     Uint256(U256),
     Str(String),
+    Bool(bool),
 }
 
 impl Default for Value {
@@ -38,6 +39,7 @@ impl Display for Value {
         match self {
             Self::Uint256(value) => write!(f, "{value}"),
             Self::Str(value) => write!(f, "{value}"),
+            Self::Bool(value) => write!(f, "{value}"),
         }
     }
 }
@@ -47,6 +49,7 @@ impl Value {
         match self {
             Self::Uint256(_) => ValueKind::Uint256,
             Self::Str(_) => ValueKind::Str,
+            Self::Bool(_) => ValueKind::Bool,
         }
     }
 
@@ -60,6 +63,9 @@ impl Value {
             Self::Str(value) => {
                 serialize_str(value, writer)?;
             }
+            Self::Bool(value) => {
+                writer.write_all(&[if *value { 1 } else { 0 }])?;
+            }
         }
         Ok(())
     }
@@ -68,6 +74,7 @@ impl Value {
     pub fn deserialize(reader: &mut impl Read) -> std::io::Result<Self> {
         const Uint256: u8 = ValueKind::Uint256 as u8;
         const Str: u8 = ValueKind::Str as u8;
+        const Bool: u8 = ValueKind::Bool as u8;
 
         let mut kind_buf = [0u8; 1];
         reader.read_exact(&mut kind_buf)?;
@@ -78,6 +85,11 @@ impl Value {
                 Ok(Value::Uint256(U256::from_little_endian(&buf)))
             }
             Str => Ok(Value::Str(deserialize_str(reader)?)),
+            Bool => {
+                let mut buf = [0u8; 1];
+                reader.read_exact(&mut buf)?;
+                Ok(Value::Bool(buf[0] != 0))
+            }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!(
@@ -93,6 +105,7 @@ impl Value {
 pub enum ValueKind {
     Uint256,
     Str,
+    Bool,
 }
 
 pub type Span<'a> = LocatedSpan<&'a str>;
@@ -102,6 +115,7 @@ pub enum TypeDecl {
     Any,
     Uint256,
     Str,
+    Bool,
 }
 
 pub fn tc_coerce_type<'src>(
@@ -115,6 +129,7 @@ pub fn tc_coerce_type<'src>(
         (Any, _) => target.clone(),
         (Uint256, Uint256) => Uint256,
         (Str, Str) => Str,
+        (Bool, Bool) => Bool,
         _ => {
             return Err(TypeCheckError::new(
                 format!("{:?} cannot be assigned to {:?}", value, target),
@@ -259,6 +274,7 @@ pub fn tc_expr<'src>(
     Ok(match &e.expr {
         NumLiteral(_val) => TypeDecl::Uint256,
         StrLiteral(_val) => TypeDecl::Str,
+        BoolLiteral(_val) => TypeDecl::Bool,
         Ident(str) => ctx.get_var(str).ok_or_else(|| {
             TypeCheckError::new(format!("Variable {:?} not found in scope", str), e.span)
         })?,
@@ -397,6 +413,7 @@ pub enum ExprEnum<'src> {
     Ident(Span<'src>),
     NumLiteral(U256),
     StrLiteral(String),
+    BoolLiteral(bool),
     FnInvoke(Span<'src>, Vec<Expression<'src>>),
     Add(Box<Expression<'src>>, Box<Expression<'src>>),
     Sub(Box<Expression<'src>>, Box<Expression<'src>>),
@@ -488,7 +505,14 @@ fn calc_offset<'a>(i: Span<'a>, r: Span<'a>) -> Span<'a> {
 }
 
 fn factor(i: Span) -> IResult<Span, Expression> {
-    alt((str_literal, num_literal, func_call, ident, parens))(i)
+    alt((
+        str_literal,
+        num_literal,
+        bool_literal,
+        func_call,
+        ident,
+        parens,
+    ))(i)
 }
 
 fn func_call(i: Span) -> IResult<Span, Expression> {
@@ -559,6 +583,22 @@ fn num_literal(input: Span) -> IResult<Span, Expression> {
     ))
 }
 
+fn bool_literal(input: Span) -> IResult<Span, Expression> {
+    let (r, v) = alt((tag("true"), tag("false")))(input)?;
+    Ok((
+        r,
+        Expression::new(
+            ExprEnum::BoolLiteral(v.parse().map_err(|_| {
+                nom::Err::Error(nom::error::Error {
+                    input,
+                    code: nom::error::ErrorKind::Tag,
+                })
+            })?),
+            v,
+        ),
+    ))
+}
+
 fn parens(i: Span) -> IResult<Span, Expression> {
     space_delimited(delimited(tag("("), expr, tag(")")))(i)
 }
@@ -582,6 +622,10 @@ fn term(i: Span) -> IResult<Span, Expression> {
         },
     )(r);
     res
+}
+
+fn bool_expr(b: Span) -> IResult<Span, Expression> {
+    bool_literal(b)
 }
 
 fn num_expr(i: Span) -> IResult<Span, Expression> {
@@ -654,7 +698,7 @@ fn if_expr(i0: Span) -> IResult<Span, Expression> {
 }
 
 fn expr(i: Span) -> IResult<Span, Expression> {
-    alt((if_expr, cond_expr, num_expr))(i)
+    alt((if_expr, cond_expr, num_expr, bool_expr))(i)
 }
 
 fn var_def(i: Span) -> IResult<Span, Statement> {
@@ -708,6 +752,7 @@ fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
         match *td.fragment() {
             "uint256" => TypeDecl::Uint256,
             "str" => TypeDecl::Str,
+            "bool" => TypeDecl::Bool,
             _ => {
                 return Err(nom::Err::Failure(nom::error::Error::new(
                     td,

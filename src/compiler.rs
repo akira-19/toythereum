@@ -374,6 +374,11 @@ impl Compiler {
                 self.add_load_literal_inst(id);
                 self.stack_top()
             }
+            ExprEnum::BoolLiteral(b) => {
+                let id = self.add_literal(Value::Bool(*b));
+                self.add_load_literal_inst(id);
+                self.stack_top()
+            }
             ExprEnum::Ident(ident) => {
                 let var = self.target_stack.iter().enumerate().find(|(_i, tgt)| {
                     if let Target::Local(id) = tgt {
