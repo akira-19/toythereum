@@ -348,25 +348,9 @@ pub fn type_check<'src>(
             Statement::Expression(e) => {
                 res = tc_expr(&e, ctx)?;
             }
-            Statement::For {
-                loop_var,
-                start,
-                end,
-                stmts,
-                ..
-            } => {
-                tc_coerce_type(&tc_expr(start, ctx)?, &TypeDecl::Uint256, start.span)?;
-                tc_coerce_type(&tc_expr(end, ctx)?, &TypeDecl::Uint256, end.span)?;
-                ctx.vars.insert(loop_var, TypeDecl::Uint256);
-                res = type_check(stmts, ctx)?;
-            }
             Statement::Return(e) => {
                 return tc_expr(e, ctx);
             }
-            Statement::Break => {
-                // TODO: check types in break out site. For now we disallow break with values like Rust.
-            }
-            Statement::Continue => (),
         }
     }
     Ok(res)
@@ -453,15 +437,6 @@ pub enum Statement<'src> {
         name: Span<'src>,
         ex: Expression<'src>,
     },
-    For {
-        span: Span<'src>,
-        loop_var: Span<'src>,
-        start: Expression<'src>,
-        end: Expression<'src>,
-        stmts: Statements<'src>,
-    },
-    Break,
-    Continue,
     FnDef {
         name: Span<'src>,
         args: Vec<(Span<'src>, TypeDecl)>,
@@ -478,10 +453,8 @@ impl<'src> Statement<'src> {
             Expression(ex) => ex.span,
             VarDef { span, .. } => *span,
             VarAssign { span, .. } => *span,
-            For { span, .. } => *span,
             FnDef { name, stmts, .. } => calc_offset(*name, stmts.span()),
             Return(ex) => ex.span,
-            Break | Continue => return None,
         })
     }
 }
@@ -728,30 +701,6 @@ fn expr_statement(i: Span) -> IResult<Span, Statement> {
     Ok((i, Statement::Expression(res)))
 }
 
-fn for_statement(i: Span) -> IResult<Span, Statement> {
-    let i0 = i;
-    let (i, _) = space_delimited(tag("for"))(i)?;
-    let (i, (loop_var, start, end, stmts)) = cut(|i| {
-        let (i, loop_var) = space_delimited(identifier)(i)?;
-        let (i, _) = space_delimited(tag("in"))(i)?;
-        let (i, start) = space_delimited(expr)(i)?;
-        let (i, _) = space_delimited(tag("to"))(i)?;
-        let (i, end) = space_delimited(expr)(i)?;
-        let (i, stmts) = delimited(open_brace, statements, close_brace)(i)?;
-        Ok((i, (loop_var, start, end, stmts)))
-    })(i)?;
-    Ok((
-        i,
-        Statement::For {
-            span: calc_offset(i0, i),
-            loop_var,
-            start,
-            end,
-            stmts,
-        },
-    ))
-}
-
 fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
     let (i, td) = space_delimited(identifier)(i)?;
     Ok((
@@ -806,16 +755,6 @@ fn return_statement(i: Span) -> IResult<Span, Statement> {
     Ok((i, Statement::Return(ex)))
 }
 
-fn break_statement(i: Span) -> IResult<Span, Statement> {
-    let (i, _) = space_delimited(tag("break"))(i)?;
-    Ok((i, Statement::Break))
-}
-
-fn continue_statement(i: Span) -> IResult<Span, Statement> {
-    let (i, _) = space_delimited(tag("continue"))(i)?;
-    Ok((i, Statement::Continue))
-}
-
 fn general_statement<'a>(last: bool) -> impl Fn(Span<'a>) -> IResult<Span<'a>, Statement> {
     let terminator = move |i| -> IResult<Span, ()> {
         let mut semicolon = pair(tag(";"), multispace0);
@@ -830,10 +769,7 @@ fn general_statement<'a>(last: bool) -> impl Fn(Span<'a>) -> IResult<Span<'a>, S
             var_def,
             var_assign,
             fn_def_statement,
-            for_statement,
             terminated(return_statement, terminator),
-            terminated(break_statement, terminator),
-            terminated(continue_statement, terminator),
             terminated(expr_statement, terminator),
         ))(input)
     }

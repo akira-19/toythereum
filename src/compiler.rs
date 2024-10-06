@@ -131,22 +131,6 @@ enum Target {
     Local(String),
 }
 
-struct LoopFrame {
-    start: StkIdx,
-    break_ips: Vec<InstPtr>,
-    continue_ips: Vec<(InstPtr, usize)>,
-}
-
-impl LoopFrame {
-    fn new(start: StkIdx) -> Self {
-        Self {
-            start,
-            break_ips: vec![],
-            continue_ips: vec![],
-        }
-    }
-}
-
 struct FnByteCode {
     args: Vec<String>,
     literals: Vec<Value>,
@@ -257,23 +241,11 @@ fn disasm_common(
     Ok(())
 }
 
-#[derive(Debug)]
-struct LoopStackUnderflowError;
-
-impl Display for LoopStackUnderflowError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "A break statement outside loop")
-    }
-}
-
-impl Error for LoopStackUnderflowError {}
-
 struct Compiler {
     literals: Vec<Value>,
     instructions: Vec<Instruction>,
     target_stack: Vec<Target>,
     funcs: HashMap<String, FnByteCode>,
-    loop_stack: Vec<LoopFrame>,
 }
 
 impl Compiler {
@@ -283,31 +255,11 @@ impl Compiler {
             instructions: vec![],
             target_stack: vec![],
             funcs: HashMap::new(),
-            loop_stack: vec![],
         }
     }
 
     fn stack_top(&self) -> StkIdx {
         StkIdx(self.target_stack.len() - 1)
-    }
-
-    fn fixup_breaks(&mut self) -> Result<(), Box<dyn Error>> {
-        let loop_frame = self.loop_stack.pop().ok_or(LoopStackUnderflowError)?;
-        let break_jmp_addr = self.instructions.len();
-        for ip in loop_frame.break_ips {
-            self.instructions[ip.0].arg0 = break_jmp_addr as u8;
-        }
-        Ok(())
-    }
-
-    fn fixup_continues(&mut self) -> Result<(), Box<dyn Error>> {
-        let loop_frame = self.loop_stack.last().ok_or(LoopStackUnderflowError)?;
-        let continue_jmp_addr = self.instructions.len();
-        for (ip, stk) in &loop_frame.continue_ips {
-            self.instructions[ip.0].arg0 = (self.target_stack.len() - stk) as u8;
-            self.instructions[ip.0 + 1].arg0 = continue_jmp_addr as u8;
-        }
-        Ok(())
     }
 
     fn add_literal(&mut self, value: Value) -> u8 {
@@ -544,66 +496,6 @@ impl Compiler {
                         .ok_or_else(|| format!("Variable name not found: {name}"))?;
                     self.add_copy_inst(stk_ex);
                     self.add_store_inst(StkIdx(stk_local));
-                }
-                Statement::For {
-                    loop_var,
-                    start,
-                    end,
-                    stmts,
-                    ..
-                } => {
-                    let stk_start = self.compile_expr(start)?;
-                    let stk_end = self.compile_expr(end)?;
-                    self.add_copy_inst(stk_start);
-                    let stk_loop_var = self.stack_top();
-                    self.target_stack[stk_loop_var.0] = Target::Local(loop_var.to_string());
-                    let inst_check_exit = self.instructions.len();
-                    self.add_copy_inst(stk_loop_var);
-                    self.add_copy_inst(stk_end);
-                    self.add_binop_inst(OpCode::Lt);
-                    let jf_inst = self.add_jf_inst();
-                    self.loop_stack.push(LoopFrame::new(stk_loop_var));
-                    self.compile_stmts(stmts)?;
-                    self.fixup_continues()?;
-                    let one = self.add_literal(Value::Uint256(U256::one()));
-                    self.add_copy_inst(stk_loop_var);
-                    self.add_load_literal_inst(one);
-                    self.add_inst(OpCode::Add, 0);
-                    self.target_stack.pop();
-                    self.add_store_inst(stk_loop_var);
-                    self.add_pop_until_inst(stk_loop_var);
-                    self.add_inst(OpCode::Jmp, inst_check_exit as u8);
-                    self.fixup_jmp(jf_inst);
-                    self.fixup_breaks()?;
-                }
-                Statement::Break => {
-                    let start = self
-                        .loop_stack
-                        .last()
-                        .map(|loop_frame| loop_frame.start)
-                        .ok_or(LoopStackUnderflowError)?;
-                    self.add_pop_until_inst(start);
-
-                    let loop_frame = self.loop_stack.last_mut().ok_or(LoopStackUnderflowError)?;
-                    let break_ip = self.instructions.len();
-                    loop_frame.break_ips.push(InstPtr(break_ip));
-                    self.add_inst(OpCode::Jmp, 0);
-                }
-                Statement::Continue => {
-                    let start = self
-                        .loop_stack
-                        .last()
-                        .map(|frame| frame.start)
-                        .ok_or(LoopStackUnderflowError)?;
-                    self.add_pop_until_inst(start);
-
-                    let loop_frame = self.loop_stack.last_mut().ok_or(LoopStackUnderflowError)?;
-                    let continue_ip = self.instructions.len();
-                    loop_frame
-                        .continue_ips
-                        .push((InstPtr(continue_ip), self.target_stack.len()));
-                    self.add_inst(OpCode::Dup, 0);
-                    self.add_inst(OpCode::Jmp, 0);
                 }
                 Statement::FnDef {
                     name, args, stmts, ..
