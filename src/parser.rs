@@ -112,31 +112,24 @@ pub type Span<'a> = LocatedSpan<&'a str>;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum TypeDecl {
-    Any,
     Uint256,
     Str,
     Bool,
 }
 
-pub fn tc_coerce_type<'src>(
-    value: &TypeDecl,
-    target: &TypeDecl,
+fn tc_check_type<'src>(
+    value: &Option<TypeDecl>,
+    target: &Option<TypeDecl>,
     span: Span<'src>,
-) -> Result<TypeDecl, TypeCheckError<'src>> {
-    use TypeDecl::*;
-    Ok(match (value, target) {
-        (_, Any) => value.clone(),
-        (Any, _) => target.clone(),
-        (Uint256, Uint256) => Uint256,
-        (Str, Str) => Str,
-        (Bool, Bool) => Bool,
-        _ => {
-            return Err(TypeCheckError::new(
-                format!("{:?} cannot be assigned to {:?}", value, target),
-                span,
-            ))
-        }
-    })
+) -> Result<Option<TypeDecl>, TypeCheckError<'src>> {
+    if value == target {
+        Ok(*value)
+    } else {
+        Err(TypeCheckError::new(
+            format!("{:?} cannot be assigned to {:?}", value, target),
+            span,
+        ))
+    }
 }
 
 pub struct TypeCheckContext<'src, 'ctx> {
@@ -229,18 +222,15 @@ pub fn tc_binary_op<'src>(
     })
 }
 
-pub fn binary_op_type(lhs: &TypeDecl, rhs: &TypeDecl) -> Result<TypeDecl, ()> {
+fn binary_op_type(lhs: &Option<TypeDecl>, rhs: &Option<TypeDecl>) -> Result<TypeDecl, ()> {
     use TypeDecl::*;
     Ok(match (lhs, rhs) {
-        (Any, _) => Any,
-        (_, Any) => Any,
-        (Uint256, Uint256) => Uint256,
-        (Str, Str) => Str,
+        (Some(Uint256), Some(Uint256)) => Uint256,
         _ => return Err(()),
     })
 }
 
-pub fn tc_binary_cmp<'src>(
+fn tc_binary_cmp<'src>(
     lhs: &Expression<'src>,
     rhs: &Expression<'src>,
     ctx: &mut TypeCheckContext<'src, '_>,
@@ -250,10 +240,7 @@ pub fn tc_binary_cmp<'src>(
     let lhst = tc_expr(lhs, ctx)?;
     let rhst = tc_expr(rhs, ctx)?;
     Ok(match (&lhst, &rhst) {
-        (Any, _) => Uint256,
-        (_, Any) => Uint256,
-        (Uint256, Uint256) => Uint256,
-        (Str, Str) => Uint256,
+        (Some(Uint256), Some(Uint256)) => Bool,
         _ => {
             return Err(TypeCheckError::new(
                 format!(
@@ -266,18 +253,25 @@ pub fn tc_binary_cmp<'src>(
     })
 }
 
-pub fn tc_expr<'src>(
+fn tc_expr<'src>(
     e: &Expression<'src>,
     ctx: &mut TypeCheckContext<'src, '_>,
-) -> Result<TypeDecl, TypeCheckError<'src>> {
+) -> Result<Option<TypeDecl>, TypeCheckError<'src>> {
     use ExprEnum::*;
     Ok(match &e.expr {
-        NumLiteral(_val) => TypeDecl::Uint256,
-        StrLiteral(_val) => TypeDecl::Str,
-        BoolLiteral(_val) => TypeDecl::Bool,
-        Ident(str) => ctx.get_var(str).ok_or_else(|| {
-            TypeCheckError::new(format!("Variable {:?} not found in scope", str), e.span)
-        })?,
+        NumLiteral(_val) => Some(TypeDecl::Uint256),
+        StrLiteral(_val) => Some(TypeDecl::Str),
+        BoolLiteral(_val) => Some(TypeDecl::Bool),
+        Ident(str) => {
+            let v = ctx.get_var(str);
+            if v == None {
+                Err(TypeCheckError::new(
+                    format!("Variable \"{}\" not found in scope", str),
+                    e.span,
+                ))?;
+            }
+            v
+        }
         FnInvoke(str, args) => {
             let args_ty = args
                 .iter()
@@ -288,37 +282,20 @@ pub fn tc_expr<'src>(
             })?;
             let args_decl = func.args();
             for ((arg_ty, arg_span), decl) in args_ty.iter().zip(args_decl.iter()) {
-                tc_coerce_type(&arg_ty, &decl.1, *arg_span)?;
+                tc_check_type(&arg_ty, &Some(decl.1), *arg_span)?;
             }
             func.ret_type()
         }
-        Add(lhs, rhs) => tc_binary_op(&lhs, &rhs, ctx, "Add")?,
-        Sub(lhs, rhs) => tc_binary_op(&lhs, &rhs, ctx, "Sub")?,
-        Mul(lhs, rhs) => tc_binary_op(&lhs, &rhs, ctx, "Mult")?,
-        Div(lhs, rhs) => tc_binary_op(&lhs, &rhs, ctx, "Div")?,
-        Lt(lhs, rhs) => tc_binary_cmp(&lhs, &rhs, ctx, "LT")?,
-        Gt(lhs, rhs) => tc_binary_cmp(&lhs, &rhs, ctx, "GT")?,
+        Add(lhs, rhs) => Some(tc_binary_op(&lhs, &rhs, ctx, "Add")?),
+        Sub(lhs, rhs) => Some(tc_binary_op(&lhs, &rhs, ctx, "Sub")?),
+        Mul(lhs, rhs) => Some(tc_binary_op(&lhs, &rhs, ctx, "Mult")?),
+        Div(lhs, rhs) => Some(tc_binary_op(&lhs, &rhs, ctx, "Div")?),
+        Lt(lhs, rhs) => Some(tc_binary_cmp(&lhs, &rhs, ctx, "LT")?),
+        Gt(lhs, rhs) => Some(tc_binary_cmp(&lhs, &rhs, ctx, "GT")?),
         If(cond, true_branch, false_branch) => {
-            tc_coerce_type(&tc_expr(cond, ctx)?, &TypeDecl::Uint256, cond.span)?;
-            let true_type = type_check(true_branch, ctx)?;
-            if let Some(false_branch) = false_branch {
-                let false_type = type_check(false_branch, ctx)?;
-                binary_op_type(&true_type, &false_type).map_err(|_| {
-                    let true_span = true_branch.span();
-                    let false_span = false_branch.span();
-                    TypeCheckError::new(
-                        format!(
-                            "Conditional expression doesn't have the \
-            compatible types in true and false branch: \
-            {:?} and {:?}",
-                            true_type, false_type
-                        ),
-                        calc_offset(true_span, false_span),
-                    )
-                })?
-            } else {
-                true_type
-            }
+            let t = tc_check_type(&tc_expr(cond, ctx)?, &Some(TypeDecl::Bool), cond.span)?;
+            // todo: may be nothing to return
+            t
         }
     })
 }
@@ -326,19 +303,24 @@ pub fn tc_expr<'src>(
 pub fn type_check<'src>(
     stmts: &Vec<Statement<'src>>,
     ctx: &mut TypeCheckContext<'src, '_>,
-) -> Result<TypeDecl, TypeCheckError<'src>> {
-    let mut res = TypeDecl::Any;
+) -> Result<Option<TypeDecl>, TypeCheckError<'src>> {
+    let mut res = None;
     for stmt in stmts {
         match stmt {
             Statement::VarDef { name, td, ex, .. } => {
                 let init_type = tc_expr(ex, ctx)?;
-                let init_type = tc_coerce_type(&init_type, td, ex.span)?;
-                ctx.vars.insert(**name, init_type);
+                let init_type = tc_check_type(&init_type, &Some(*td), ex.span)?;
+
+                if let Some(var_type) = init_type {
+                    ctx.vars.insert(**name, var_type);
+                } else {
+                    return Err(TypeCheckError::new("Must have type".to_string(), ex.span));
+                }
             }
             Statement::VarAssign { name, ex, .. } => {
                 let init_type = tc_expr(ex, ctx)?;
                 let target = ctx.vars.get(**name).expect("Variable not found");
-                tc_coerce_type(&init_type, target, ex.span)?;
+                tc_check_type(&init_type, &Some(*target), ex.span)?;
             }
             Statement::FnDef {
                 name,
@@ -359,7 +341,7 @@ pub fn type_check<'src>(
                     subctx.vars.insert(arg, *ty);
                 }
                 let last_stmt = type_check(stmts, &mut subctx)?;
-                tc_coerce_type(&last_stmt, &ret_type, stmts.span())?;
+                tc_check_type(&last_stmt, ret_type, stmts.span())?;
             }
             Statement::Expression(e) => {
                 res = tc_expr(&e, ctx)?;
@@ -389,7 +371,7 @@ impl<'src> FnDecl<'src> {
         }
     }
 
-    pub fn ret_type(&self) -> TypeDecl {
+    pub fn ret_type(&self) -> Option<TypeDecl> {
         match self {
             Self::User(user) => user.ret_type,
             Self::Native(native) => native.ret_type,
@@ -399,12 +381,12 @@ impl<'src> FnDecl<'src> {
 
 pub struct UserFn<'src> {
     pub args: Vec<(Span<'src>, TypeDecl)>,
-    pub ret_type: TypeDecl,
+    pub ret_type: Option<TypeDecl>,
 }
 
 pub struct NativeFn<'src> {
     pub args: Vec<(&'src str, TypeDecl)>,
-    pub ret_type: TypeDecl,
+    pub ret_type: Option<TypeDecl>,
     pub code: Box<dyn Fn(&[Value]) -> Value>,
 }
 
@@ -457,7 +439,7 @@ pub enum Statement<'src> {
     FnDef {
         name: Span<'src>,
         args: Vec<(Span<'src>, TypeDecl)>,
-        ret_type: TypeDecl,
+        ret_type: Option<TypeDecl>,
         stmts: Statements<'src>,
     },
     Return(Expression<'src>),
@@ -788,7 +770,7 @@ fn fn_def_statement(i: Span) -> IResult<Span, Statement> {
         Statement::FnDef {
             name,
             args,
-            ret_type,
+            ret_type: Some(ret_type),
             stmts,
         },
     ))
