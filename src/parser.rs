@@ -53,12 +53,18 @@ impl Value {
         }
     }
 
+    pub fn to_vec_u8(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.serialize(&mut buf).unwrap();
+        buf
+    }
+
     pub fn serialize(&self, writer: &mut impl Write) -> std::io::Result<()> {
         let kind = self.kind() as u8;
         writer.write_all(&[kind])?;
         match self {
             Self::Uint256(value) => {
-                writer.write_all(&value.to_little_endian())?;
+                writer.write_all(&value.to_big_endian())?;
             }
             Self::Str(value) => {
                 serialize_str(value, writer)?;
@@ -82,7 +88,7 @@ impl Value {
             Uint256 => {
                 let mut buf = [0u8; 32];
                 reader.read_exact(&mut buf)?;
-                Ok(Value::Uint256(U256::from_little_endian(&buf)))
+                Ok(Value::Uint256(U256::from_big_endian(&buf)))
             }
             Str => Ok(Value::Str(deserialize_str(reader)?)),
             Bool => {
@@ -115,6 +121,17 @@ pub enum TypeDecl {
     Uint256,
     Str,
     Bool,
+}
+
+impl TypeDecl {
+    pub fn type_name(&self) -> &str {
+        use TypeDecl::*;
+        match self {
+            Uint256 => "uint256",
+            Str => "string",
+            Bool => "bool",
+        }
+    }
 }
 
 fn tc_check_type<'src>(
@@ -152,6 +169,8 @@ impl<'src, 'ctx> TypeCheckContext<'src, 'ctx> {
     pub fn get_var(&self, name: &str) -> Option<TypeDecl> {
         if let Some(val) = self.vars.get(name) {
             Some(val.clone())
+        } else if let Some(super_ctx) = self.super_context {
+            super_ctx.get_var(name)
         } else {
             None
         }
@@ -429,6 +448,7 @@ pub enum Statement<'src> {
         name: Span<'src>,
         td: TypeDecl,
         ex: Expression<'src>,
+        storage: bool,
     },
     VarAssign {
         span: Span<'src>,
@@ -696,6 +716,7 @@ fn var_def(i: Span) -> IResult<Span, Statement> {
             name,
             td,
             ex,
+            storage: false,
         },
     ))
 }
@@ -727,7 +748,7 @@ fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
         i,
         match *td.fragment() {
             "uint256" => TypeDecl::Uint256,
-            "str" => TypeDecl::Str,
+            "string" => TypeDecl::Str,
             "bool" => TypeDecl::Bool,
             _ => {
                 return Err(nom::Err::Failure(nom::error::Error::new(

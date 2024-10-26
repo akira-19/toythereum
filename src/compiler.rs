@@ -4,35 +4,41 @@ use std::{
     error::Error,
     fmt::Display,
     fs::File,
+    hash::Hash,
     io::{BufReader, BufWriter, Read, Write},
 };
 
 use primitive_types::U256;
+use tiny_keccak::{keccakf, Hasher, Keccak};
 
 use crate::parser::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OpCode {
-    LoadLiteral,
-    Store,
-    Copy,
-    /// Duplicate the value on the top of the stack arg0 times
-    Dup,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Call,
-    Jmp,
-    /// Jump if false
-    Jf,
-    /// Pop a value from the stack, compare it with a value at arg0, push true if it's less
-    Lt,
-    /// Pop n values from the stack where n is given by arg0
-    Pop,
-    /// Return current function
-    Ret,
+    Stop = 0x00,
+    Add = 0x01,
+    Mul = 0x02,
+    Sub = 0x03,
+    Div = 0x04,
+
+    EQ = 0x14,
+    SHR = 0x1C,
+
+    CalldataLoad = 0x35,
+
+    MLoad = 0x51,
+    MStore = 0x52,
+    SLoad = 0x54,
+    SStore = 0x55,
+    Jump = 0x56,
+    JumpI = 0x57,
+    JumpDest = 0x5B,
+
+    Push1 = 0x60,
+    Push32 = 0x7F,
+
+    Return = 0xF3,
 }
 
 macro_rules! impl_op_from {
@@ -51,45 +57,36 @@ macro_rules! impl_op_from {
     }
   }
 
-impl_op_from!(
-    LoadLiteral,
-    Store,
-    Copy,
-    Dup,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Call,
-    Jmp,
-    Jf,
-    Lt,
-    Pop,
-    Ret
-);
+impl_op_from!(Stop, Add, MStore, Push1, Return);
+
+#[derive(Debug, Clone, Copy)]
+enum ArgValue {
+    U256(U256),
+    FnSelector([u8; 4]),
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct Instruction {
     op: OpCode,
-    arg0: u8,
+    arg0: Option<ArgValue>,
 }
 
 impl Instruction {
-    fn new(op: OpCode, arg0: u8) -> Self {
+    fn new(op: OpCode, arg0: Option<ArgValue>) -> Self {
         Self { op, arg0 }
     }
 
-    fn serialize(&self, writer: &mut impl Write) -> Result<(), std::io::Error> {
-        writer.write_all(&[self.op as u8, self.arg0])?;
-        Ok(())
-    }
+    // fn serialize(&self, writer: &mut impl Write) -> Result<(), std::io::Error> {
+    //     writer.write_all(&[self.op as u8, self.arg0])?;
+    //     Ok(())
+    // }
 
-    fn deserialize(reader: &mut impl Read) -> Result<Self, std::io::Error> {
-        let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf)?;
-        Ok(Self::new(buf[0].into(), buf[1]))
-    }
+    // fn deserialize(reader: &mut impl Read) -> Result<Self, std::io::Error> {
+    //     let mut buf = [0u8; 2];
+    //     reader.read_exact(&mut buf)?;
+    //     Ok(Self::new(buf[0].into(), buf[1]))
+    // }
 }
 
 fn serialize_size(sz: usize, writer: &mut impl Write) -> std::io::Result<()> {
@@ -123,14 +120,6 @@ struct StkIdx(usize);
 /// Instruction Pointer
 struct InstPtr(usize);
 
-#[derive(Debug, Clone, Default)]
-enum Target {
-    #[default]
-    Temp,
-    Literal(usize),
-    Local(String),
-}
-
 struct FnByteCode {
     args: Vec<String>,
     literals: Vec<Value>,
@@ -154,20 +143,20 @@ impl FnByteCode {
         Ok(())
     }
 
-    fn write_insts(instructions: &[Instruction], writer: &mut impl Write) -> std::io::Result<()> {
-        serialize_size(instructions.len(), writer)?;
-        for instruction in instructions {
-            instruction.serialize(writer).unwrap();
-        }
-        Ok(())
-    }
+    // fn write_insts(instructions: &[Instruction], writer: &mut impl Write) -> std::io::Result<()> {
+    //     serialize_size(instructions.len(), writer)?;
+    //     for instruction in instructions {
+    //         instruction.serialize(writer).unwrap();
+    //     }
+    //     Ok(())
+    // }
 
-    fn serialize(&self, writer: &mut impl Write) -> std::io::Result<()> {
-        Self::write_args(&self.args, writer)?;
-        Self::write_literals(&self.literals, writer)?;
-        Self::write_insts(&self.instructions, writer)?;
-        Ok(())
-    }
+    // fn serialize(&self, writer: &mut impl Write) -> std::io::Result<()> {
+    //     Self::write_args(&self.args, writer)?;
+    //     Self::write_literals(&self.literals, writer)?;
+    //     Self::write_insts(&self.instructions, writer)?;
+    //     Ok(())
+    // }
 
     fn read_args(reader: &mut impl Read) -> std::io::Result<Vec<String>> {
         let num_args = deserialize_size(reader)?;
@@ -187,26 +176,26 @@ impl FnByteCode {
         Ok(literals)
     }
 
-    fn read_instructions(reader: &mut impl Read) -> std::io::Result<Vec<Instruction>> {
-        let num_instructions = deserialize_size(reader)?;
-        let mut instructions = Vec::with_capacity(num_instructions);
-        for _ in 0..num_instructions {
-            let inst = Instruction::deserialize(reader)?;
-            instructions.push(inst);
-        }
-        Ok(instructions)
-    }
+    // fn read_instructions(reader: &mut impl Read) -> std::io::Result<Vec<Instruction>> {
+    //     let num_instructions = deserialize_size(reader)?;
+    //     let mut instructions = Vec::with_capacity(num_instructions);
+    //     for _ in 0..num_instructions {
+    //         let inst = Instruction::deserialize(reader)?;
+    //         instructions.push(inst);
+    //     }
+    //     Ok(instructions)
+    // }
 
-    fn deserialize(reader: &mut impl Read) -> std::io::Result<Self> {
-        let args = Self::read_args(reader)?;
-        let literals = Self::read_literals(reader)?;
-        let instructions = Self::read_instructions(reader)?;
-        Ok(Self {
-            args,
-            literals,
-            instructions,
-        })
-    }
+    // fn deserialize(reader: &mut impl Read) -> std::io::Result<Self> {
+    //     let args = Self::read_args(reader)?;
+    //     let literals = Self::read_literals(reader)?;
+    //     let instructions = Self::read_instructions(reader)?;
+    //     Ok(Self {
+    //         args,
+    //         literals,
+    //         instructions,
+    //     })
+    // }
 
     fn disasm(&self, writer: &mut impl Write) -> std::io::Result<()> {
         disasm_common(&self.literals, &self.instructions, writer)
@@ -225,219 +214,357 @@ fn disasm_common(
     }
 
     writeln!(writer, "  Instructions [{}]", instructions.len())?;
-    for (i, inst) in instructions.iter().enumerate() {
-        match inst.op {
-            LoadLiteral => writeln!(
-                writer,
-                "    [{i}] {:?} {} ({:?})",
-                inst.op, inst.arg0, literals[inst.arg0 as usize]
-            )?,
-            Copy | Dup | Call | Jmp | Jf | Pop | Store | Ret => {
-                writeln!(writer, "    [{i}] {:?} {}", inst.op, inst.arg0)?
-            }
-            _ => writeln!(writer, "    [{i}] {:?}", inst.op)?,
-        }
-    }
+    // for (i, inst) in instructions.iter().enumerate() {
+    //     match inst.op {
+    //         LoadLiteral => writeln!(
+    //             writer,
+    //             "    [{i}] {:?} {} ({:?})",
+    //             inst.op, inst.arg0, literals[inst.arg0 as usize]
+    //         )?,
+    //         Copy | Dup | Call | Jmp | Jf | Pop | Store | Ret => {
+    //             writeln!(writer, "    [{i}] {:?} {}", inst.op, inst.arg0)?
+    //         }
+    //         _ => writeln!(writer, "    [{i}] {:?}", inst.op)?,
+    //     }
+    // }
     Ok(())
 }
 
-struct Compiler {
-    literals: Vec<Value>,
-    instructions: Vec<Instruction>,
-    target_stack: Vec<Target>,
-    funcs: HashMap<String, FnByteCode>,
+#[derive(Debug, Clone)]
+struct MemoryVariableTable {
+    value: Value,
+    address: U256,
 }
 
-impl Compiler {
+#[derive(Debug, Clone)]
+struct StorageVariableTable {
+    value: Value,
+    slot: U256,
+}
+
+#[derive(Debug, Clone)]
+struct Arg {
+    name: String,
+    value_type: TypeDecl,
+}
+
+#[derive(Debug, Clone)]
+struct FnStatements<'a> {
+    statements: Vec<Statement<'a>>,
+    args: Vec<Arg>,
+}
+
+struct Compiler<'a> {
+    literals: Vec<Value>,
+    instructions: Vec<Instruction>,
+    funcs: HashMap<[u8; 4], FnStatements<'a>>,
+    memories: HashMap<String, MemoryVariableTable>,
+    memory_pointer: U256,
+    storages: HashMap<String, StorageVariableTable>,
+    slot: U256,
+    pc: usize,
+}
+
+impl<'a> Compiler<'a> {
     fn new() -> Self {
         Self {
             literals: vec![],
             instructions: vec![],
-            target_stack: vec![],
             funcs: HashMap::new(),
+            memories: HashMap::new(),
+            memory_pointer: U256::zero(),
+            storages: HashMap::new(),
+            slot: U256::zero(),
+            pc: 0,
         }
     }
 
-    fn stack_top(&self) -> StkIdx {
-        StkIdx(self.target_stack.len() - 1)
-    }
+    // fn stack_top(&self) -> StkIdx {
+    //     StkIdx(self.target_stack.len() - 1)
+    // }
 
-    fn add_literal(&mut self, value: Value) -> u8 {
-        let existing = self
-            .literals
-            .iter()
-            .enumerate()
-            .find(|(_, val)| **val == value);
-        if let Some((i, _)) = existing {
-            i as u8
-        } else {
-            let ret = self.literals.len();
-            self.literals.push(value);
-            ret as u8
-        }
-    }
+    // fn add_literal(&mut self, value: Value) -> u8 {
+    //     let existing = self
+    //         .literals
+    //         .iter()
+    //         .enumerate()
+    //         .find(|(_, val)| **val == value);
+    //     if let Some((i, _)) = existing {
+    //         i as u8
+    //     } else {
+    //         let ret = self.literals.len();
+    //         self.literals.push(value);
+    //         ret as u8
+    //     }
+    // }
 
     /// Returns absolute position of inserted value
-    fn add_inst(&mut self, op: OpCode, arg0: u8) -> InstPtr {
+    fn add_inst(&mut self, op: OpCode, arg0: Option<ArgValue>) -> InstPtr {
         let inst = self.instructions.len();
         self.instructions.push(Instruction { op, arg0 });
+        self.pc += 1;
+        if arg0.is_some() {
+            self.pc += 32;
+        }
         InstPtr(inst)
     }
 
-    fn add_copy_inst(&mut self, stack_idx: StkIdx) -> InstPtr {
-        let inst = self.add_inst(
-            OpCode::Copy,
-            (self.target_stack.len() - stack_idx.0 - 1) as u8,
-        );
-        self.target_stack.push(Target::Temp);
-        inst
-    }
-
-    fn add_load_literal_inst(&mut self, lit: u8) -> InstPtr {
-        let inst = self.add_inst(OpCode::LoadLiteral, lit);
-        self.target_stack.push(Target::Literal(lit as usize));
-        inst
-    }
-
-    fn add_binop_inst(&mut self, op: OpCode) -> InstPtr {
-        self.target_stack.pop();
-        self.add_inst(op, 0)
-    }
-
-    fn add_store_inst(&mut self, stack_idx: StkIdx) -> InstPtr {
-        if self.target_stack.len() < stack_idx.0 + 1 {
-            eprintln!("Compiled bytecode so far:");
-            disasm_common(&self.literals, &self.instructions, &mut std::io::stderr()).unwrap();
-            panic!("Target stack undeflow during compilation!");
-        }
-        let inst = self.add_inst(
-            OpCode::Store,
-            (self.target_stack.len() - stack_idx.0 - 1) as u8,
-        );
-        self.target_stack.pop();
-        inst
-    }
-
-    fn add_jf_inst(&mut self) -> InstPtr {
-        // Push with jump address 0, because it will be set later
-        let inst = self.add_inst(OpCode::Jf, 0);
-        self.target_stack.pop();
-        inst
-    }
-
-    fn fixup_jmp(&mut self, ip: InstPtr) {
-        self.instructions[ip.0].arg0 = self.instructions.len() as u8;
-    }
-
-    /// Pop until given stack index
-    fn add_pop_until_inst(&mut self, stack_idx: StkIdx) -> Option<InstPtr> {
-        if self.target_stack.len() <= stack_idx.0 {
-            return None;
-        }
-        let inst = self.add_inst(
-            OpCode::Pop,
-            (self.target_stack.len() - stack_idx.0 - 1) as u8,
-        );
-        self.target_stack.resize(stack_idx.0 + 1, Target::Temp);
-        Some(inst)
-    }
-
-    fn add_fn(&mut self, name: String, args: &[(Span, TypeDecl)]) {
-        self.funcs.insert(
-            name,
-            FnByteCode {
-                args: args.iter().map(|(arg, _)| arg.to_string()).collect(),
-                literals: std::mem::take(&mut self.literals),
-                instructions: std::mem::take(&mut self.instructions),
-            },
-        );
-    }
-
-    fn write_funcs(&self, writer: &mut impl Write) -> std::io::Result<()> {
-        serialize_size(self.funcs.len(), writer)?;
-        for (name, func) in &self.funcs {
-            serialize_str(name, writer)?;
-            func.serialize(writer)?;
-        }
-        Ok(())
-    }
-
-    fn compile_expr(&mut self, ex: &Expression) -> Result<StkIdx, Box<dyn Error>> {
+    fn compile_expr(&mut self, ex: &Expression) -> Result<Value, Box<dyn Error>> {
         Ok(match &ex.expr {
             ExprEnum::NumLiteral(num) => {
-                let id = self.add_literal(Value::Uint256(*num));
-                self.add_load_literal_inst(id);
-                self.stack_top()
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(*num))));
+                return Ok(Value::Uint256(U256::from(*num)));
             }
-            ExprEnum::StrLiteral(str) => {
-                let id = self.add_literal(Value::Str(str.clone()));
-                self.add_load_literal_inst(id);
-                self.stack_top()
-            }
-            ExprEnum::BoolLiteral(b) => {
-                let id = self.add_literal(Value::Bool(*b));
-                self.add_load_literal_inst(id);
-                self.stack_top()
-            }
+            // ExprEnum::StrLiteral(str) => {
+            //     let id = self.add_literal(Value::Str(str.clone()));
+            //     self.add_load_literal_inst(id);
+            //     self.stack_top()
+            // }
+            // ExprEnum::BoolLiteral(b) => {
+            //     let id = self.add_literal(Value::Bool(*b));
+            //     self.add_load_literal_inst(id);
+            //     self.stack_top()
+            // }
             ExprEnum::Ident(ident) => {
-                let var = self.target_stack.iter().enumerate().find(|(_i, tgt)| {
-                    if let Target::Local(id) = tgt {
-                        id == ident.fragment()
-                    } else {
-                        false
-                    }
-                });
-                if let Some(var) = var {
-                    return Ok(StkIdx(var.0));
+                if let Some(v) = self.memories.get(&ident.fragment().to_string()).cloned() {
+                    self.load_memory(&v)?;
+                    return Ok(v.value);
+                } else if let Some(v) = self.storages.get(&ident.fragment().to_string()).cloned() {
+                    self.load_storage(&v)?;
+                    return Ok(v.value);
                 } else {
                     return Err(format!("Variable not found: {ident:?}").into());
-                }
+                };
             }
             ExprEnum::Add(lhs, rhs) => self.bin_op(OpCode::Add, lhs, rhs)?,
             ExprEnum::Sub(lhs, rhs) => self.bin_op(OpCode::Sub, lhs, rhs)?,
             ExprEnum::Mul(lhs, rhs) => self.bin_op(OpCode::Mul, lhs, rhs)?,
             ExprEnum::Div(lhs, rhs) => self.bin_op(OpCode::Div, lhs, rhs)?,
-            ExprEnum::Gt(lhs, rhs) => self.bin_op(OpCode::Lt, rhs, lhs)?,
-            ExprEnum::Lt(lhs, rhs) => self.bin_op(OpCode::Lt, lhs, rhs)?,
-            ExprEnum::FnInvoke(name, args) => {
-                let stack_before_args = self.target_stack.len();
-                let name = self.add_literal(Value::Str(name.to_string()));
-                let args = args
-                    .iter()
-                    .map(|arg| self.compile_expr(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
+            // ExprEnum::Gt(lhs, rhs) => self.bin_op(OpCode::Lt, rhs, lhs)?,
+            // ExprEnum::Lt(lhs, rhs) => self.bin_op(OpCode::Lt, lhs, rhs)?,
+            // ExprEnum::FnInvoke(name, args) => {
+            //     let stack_before_args = self.target_stack.len();
+            //     let name = self.add_literal(Value::Str(name.to_string()));
+            //     let args = args
+            //         .iter()
+            //         .map(|arg| self.compile_expr(arg))
+            //         .collect::<Result<Vec<_>, _>>()?;
 
-                let stack_before_call = self.target_stack.len();
-                self.add_load_literal_inst(name);
-                for arg in &args {
-                    self.add_copy_inst(*arg);
-                }
+            //     let stack_before_call = self.target_stack.len();
+            //     self.add_load_literal_inst(name);
+            //     for arg in &args {
+            //         self.add_copy_inst(*arg);
+            //     }
 
-                self.add_inst(OpCode::Call, args.len() as u8);
-                self.target_stack
-                    .resize(stack_before_call + 1, Target::Temp);
-                self.coerce_stack(StkIdx(stack_before_args));
-                self.stack_top()
-            }
-            ExprEnum::If(cond, true_branch, false_branch) => {
-                use OpCode::*;
-                let cond = self.compile_expr(cond)?;
-                self.add_copy_inst(cond);
-                let jf_inst = self.add_jf_inst();
-                let stack_size_before = self.target_stack.len();
-                self.compile_stmts_or_zero(true_branch)?;
-                self.coerce_stack(StkIdx(stack_size_before + 1));
-                let jmp_inst = self.add_inst(Jmp, 0);
-                self.fixup_jmp(jf_inst);
-                self.target_stack.resize(stack_size_before, Target::Temp);
-                if let Some(false_branch) = false_branch.as_ref() {
-                    self.compile_stmts_or_zero(&false_branch)?;
-                }
-                self.coerce_stack(StkIdx(stack_size_before + 1));
-                self.fixup_jmp(jmp_inst);
-                self.stack_top()
-            }
+            //     self.add_inst(OpCode::Call, args.len() as u8);
+            //     self.target_stack
+            //         .resize(stack_before_call + 1, Target::Temp);
+            //     self.coerce_stack(StkIdx(stack_before_args));
+            //     self.stack_top()
+            // }
+            // ExprEnum::If(cond, true_branch, false_branch) => {
+            //     use OpCode::*;
+            //     let cond = self.compile_expr(cond)?;
+            //     self.add_copy_inst(cond);
+            //     let jf_inst = self.add_jf_inst();
+            //     let stack_size_before = self.target_stack.len();
+            //     self.compile_stmts_or_zero(true_branch, false)?;
+            //     self.coerce_stack(StkIdx(stack_size_before + 1));
+            //     let jmp_inst = self.add_inst(Jmp, 0);
+            //     self.fixup_jmp(jf_inst);
+            //     self.target_stack.resize(stack_size_before, Target::Temp);
+            //     if let Some(false_branch) = false_branch.as_ref() {
+            //         self.compile_stmts_or_zero(&false_branch, false)?;
+            //     }
+            //     self.coerce_stack(StkIdx(stack_size_before + 1));
+            //     self.fixup_jmp(jmp_inst);
+            //     self.stack_top()
+            // }
+            _ => todo!(),
         })
+    }
+
+    fn load_memory(&mut self, v: &MemoryVariableTable) -> Result<(), Box<dyn Error>> {
+        // TODO: if the value is dynamic type, we need to load the memory recursively?
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.address)));
+        self.add_inst(OpCode::MLoad, None);
+        Ok(())
+    }
+
+    fn save_memory(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
+        // TODO: if the value is dynamic type, we need to user more than one memory slot
+        // but for now, we only use one slot
+
+        self.memories.insert(
+            name,
+            MemoryVariableTable {
+                value: v.clone(),
+                address: self.memory_pointer,
+            },
+        );
+
+        let value = v.to_vec_u8();
+        self.add_inst(
+            OpCode::Push32,
+            Some(ArgValue::U256(U256::from_big_endian(&value))),
+        );
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
+        self.add_inst(OpCode::MStore, None);
+        self.memory_pointer += U256::from(32);
+        Ok(())
+    }
+
+    fn update_memory(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
+        if let Some(m) = self.memories.get_mut(&name) {
+            let address = m.address;
+            m.value = v.clone();
+            let value = v.to_vec_u8();
+
+            // TODO: if the value is dynamic type, new memory slots might be needed
+            self.add_inst(
+                OpCode::Push32,
+                Some(ArgValue::U256(U256::from_big_endian(&value))),
+            );
+            self.add_inst(OpCode::Push32, Some(ArgValue::U256(address)));
+            self.add_inst(OpCode::MStore, None);
+            Ok(())
+        } else {
+            Err(format!("Variable not found: {name:?}").into())
+        }
+    }
+
+    fn load_storage(&mut self, v: &StorageVariableTable) -> Result<(), Box<dyn Error>> {
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.slot)));
+        match &v.value {
+            Value::Uint256(_) => {
+                self.add_inst(OpCode::SLoad, None);
+            }
+            Value::Str(_) => {
+                // retrieve the length from the slot
+                self.add_inst(OpCode::SLoad, None);
+
+                // get pointer to the slot of the string
+                let mut hasher = Keccak::v256();
+                let mut pointer = [0u8; 32];
+                hasher.update(&v.slot.to_big_endian().to_vec());
+                hasher.finalize(&mut pointer);
+                self.add_inst(
+                    OpCode::Push32,
+                    Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                );
+
+                // load the string from the slot
+                self.add_inst(OpCode::SLoad, None);
+
+                // TODO: implement the process if the string is longer than 32 bytes
+            }
+            Value::Bool(_) => {
+                self.add_inst(OpCode::SLoad, None);
+            }
+        }
+        Ok(())
+    }
+
+    fn save_storage(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
+        self.storages.insert(
+            name,
+            StorageVariableTable {
+                value: v.clone(),
+                slot: self.slot,
+            },
+        );
+        match v {
+            Value::Uint256(value) => {
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                self.add_inst(OpCode::SStore, None);
+                self.slot += U256::one();
+            }
+            Value::Str(value) => {
+                // store the length of the string
+                let len = v.to_vec_u8().len();
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                self.add_inst(OpCode::SStore, None);
+                self.slot += U256::one();
+
+                // store the string
+                // TODO: implement the process if the string is longer than 32 bytes
+                // but for now, only one slot will be used
+                let mut hasher = Keccak::v256();
+                let mut pointer = [0u8; 32];
+                hasher.update(&self.slot.to_big_endian().to_vec());
+                hasher.finalize(&mut pointer);
+                self.add_inst(
+                    OpCode::Push32,
+                    Some(ArgValue::U256(U256::from_big_endian(
+                        &value.clone().into_bytes(),
+                    ))),
+                );
+                self.add_inst(
+                    OpCode::Push32,
+                    Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                );
+                self.add_inst(OpCode::SStore, None);
+            }
+            Value::Bool(value) => {
+                let num = if *value { U256::one() } else { U256::zero() };
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
+                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                self.add_inst(OpCode::SStore, None);
+                self.slot += U256::one();
+            }
+        }
+        Ok(())
+    }
+
+    fn update_storage(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
+        if let Some(s) = self.storages.get_mut(&name) {
+            s.value = v.clone();
+            let slot = s.slot;
+            match v {
+                Value::Uint256(value) => {
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+                }
+                Value::Str(value) => {
+                    // store the length of the string
+                    let len = v.to_vec_u8().len();
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+
+                    // store the string
+                    // TODO: implement the process if the string is longer than 32 bytes
+                    // but for now, only one slot will be used
+                    let mut hasher = Keccak::v256();
+                    let mut pointer = [0u8; 32];
+                    hasher.update(&self.slot.to_big_endian().to_vec());
+                    hasher.finalize(&mut pointer);
+                    self.add_inst(
+                        OpCode::Push32,
+                        Some(ArgValue::U256(U256::from_big_endian(
+                            &value.clone().into_bytes(),
+                        ))),
+                    );
+                    self.add_inst(
+                        OpCode::Push32,
+                        Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                    );
+                    self.add_inst(OpCode::SStore, None);
+                }
+                Value::Bool(value) => {
+                    let num = if *value { U256::one() } else { U256::zero() };
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+                }
+            }
+            Ok(())
+        } else {
+            Err(format!("Variable not found: {name:?}").into())
+        }
     }
 
     fn bin_op(
@@ -445,32 +572,37 @@ impl Compiler {
         op: OpCode,
         lhs: &Expression,
         rhs: &Expression,
-    ) -> Result<StkIdx, Box<dyn Error>> {
-        let lhs = self.compile_expr(lhs)?;
-        let rhs = self.compile_expr(rhs)?;
-        self.add_copy_inst(lhs);
-        self.add_copy_inst(rhs);
-        self.add_inst(op, 0);
-        self.target_stack.pop();
-        self.target_stack.pop();
-        self.target_stack.push(Target::Temp);
-        Ok(self.stack_top())
-    }
+    ) -> Result<Value, Box<dyn Error>> {
+        let r_value = self.compile_expr(rhs)?;
+        let l_value = self.compile_expr(lhs)?;
 
-    /// Coerce the stack size to be target + 1, and move the old top
-    /// to the new top.
-    fn coerce_stack(&mut self, target: StkIdx) {
-        if target.0 < self.target_stack.len() - 1 {
-            self.add_store_inst(target);
-            self.add_pop_until_inst(target);
-        } else if self.target_stack.len() - 1 < target.0 {
-            for _ in self.target_stack.len() - 1..target.0 {
-                self.add_copy_inst(self.stack_top());
+        self.add_inst(op, None);
+
+        match (l_value, r_value) {
+            (Value::Uint256(l), Value::Uint256(r)) => {
+                let result = match op {
+                    OpCode::Add => l + r,
+                    OpCode::Sub => l - r,
+                    OpCode::Mul => l * r,
+                    OpCode::Div => {
+                        if r == U256::zero() {
+                            return Err("Division by zero".into());
+                        }
+                        l / r
+                    }
+                    _ => return Err("Invalid opcode".into()),
+                };
+                Ok(Value::Uint256(result))
             }
+            _ => Err("Invalid type".into()),
         }
     }
 
-    fn compile_stmts(&mut self, stmts: &Statements) -> Result<Option<StkIdx>, Box<dyn Error>> {
+    fn compile_stmts(
+        &mut self,
+        stmts: &'a Statements<'a>,
+        top: bool,
+    ) -> Result<Option<StkIdx>, Box<dyn Error>> {
         let mut last_result = None;
         for stmt in stmts {
             match stmt {
@@ -478,77 +610,189 @@ impl Compiler {
                     last_result = Some(self.compile_expr(ex)?);
                 }
                 Statement::VarDef { name, ex, .. } => {
-                    let mut ex = self.compile_expr(ex)?;
-                    if !matches!(self.target_stack[ex.0], Target::Temp) {
-                        self.add_copy_inst(ex);
-                        ex = self.stack_top();
+                    let result = self.compile_expr(ex)?;
+                    let var_name = name.fragment().to_string();
+                    // if top is true, we put the value into the storage
+                    if top {
+                        self.save_storage(var_name, &result)?;
+                    } else {
+                        self.save_memory(var_name, &result)?;
                     }
-                    self.target_stack[ex.0] = Target::Local(name.to_string());
                 }
                 Statement::VarAssign { name, ex, .. } => {
-                    let stk_ex = self.compile_expr(ex)?;
-                    let (stk_local, _) = self
-                        .target_stack
-                        .iter_mut()
-                        .enumerate()
-                        .find(|(_, tgt)| {
-                            if let Target::Local(tgt) = tgt {
-                                tgt == name.fragment()
-                            } else {
-                                false
-                            }
-                        })
-                        .ok_or_else(|| format!("Variable name not found: {name}"))?;
-                    self.add_copy_inst(stk_ex);
-                    self.add_store_inst(StkIdx(stk_local));
+                    let result = self.compile_expr(ex)?;
+                    let var_name = name.fragment().to_string();
+
+                    if let Some(data) = self.memories.get_mut(&var_name) {
+                        data.value = result.clone();
+                        let value = data.value.clone();
+                        self.update_memory(var_name, &value)?;
+                    } else if let Some(data) = self.storages.get_mut(&var_name) {
+                        data.value = result.clone();
+                        let value = data.value.clone();
+                        self.update_storage(var_name, &value)?;
+                    } else {
+                        return Err(format!("Variable not found: {name:?}").into());
+                    }
                 }
                 Statement::FnDef {
                     name, args, stmts, ..
                 } => {
-                    let literals = std::mem::take(&mut self.literals);
-                    let instructions = std::mem::take(&mut self.instructions);
-                    let target_stack = std::mem::take(&mut self.target_stack);
-                    self.target_stack = args
+                    let func = name.fragment();
+                    let arg_types = args.iter().map(|arg| arg.1.type_name()).collect::<Vec<_>>();
+                    let selector = create_func_selector(func, arg_types);
+
+                    // get func selector from calldata
+                    self.add_inst(OpCode::CalldataLoad, None);
+                    self.add_inst(
+                        OpCode::Push32,
+                        Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
+                    );
+                    self.add_inst(OpCode::SHR, None);
+
+                    // add this function's selector to the stack and compare
+                    self.add_inst(
+                        OpCode::Push32,
+                        Some(ArgValue::U256(U256::from_big_endian(&selector))),
+                    );
+                    self.add_inst(OpCode::EQ, None);
+
+                    // if the selector is equal, jmp
+                    self.add_inst(OpCode::Push32, Some(ArgValue::FnSelector(selector)));
+                    self.add_inst(OpCode::JumpI, None);
+
+                    // save the func temporarily
+                    let fn_args = args
                         .iter()
-                        .map(|arg| Target::Local(arg.0.to_string()))
-                        .collect();
-                    self.compile_stmts(stmts)?;
-                    self.add_fn(name.to_string(), args);
-                    self.literals = literals;
-                    self.instructions = instructions;
-                    self.target_stack = target_stack;
+                        .map(|arg| Arg {
+                            name: arg.0.fragment().to_string(),
+                            value_type: arg.1,
+                        })
+                        .collect::<Vec<_>>();
+
+                    let fn_stmts = FnStatements {
+                        statements: stmts.clone(),
+                        args: fn_args,
+                    };
+
+                    self.funcs.insert(selector, fn_stmts);
                 }
                 Statement::Return(ex) => {
-                    let res = self.compile_expr(ex)?;
-                    self.add_inst(OpCode::Ret, (self.target_stack.len() - res.0 - 1) as u8);
+                    // let res = self.compile_expr(ex)?;
+                    // self.add_inst(OpCode::Ret, (self.target_stack.len() - res.0 - 1) as u8);
                 }
             }
         }
-        Ok(last_result)
+        for inst in &self.instructions {
+            println!("{:?}", inst);
+        }
+        // put funcs here
+
+        // func selector to pc
+
+        Ok(None)
+        // Ok(last_result)
     }
 
-    fn compile_stmts_or_zero(&mut self, stmts: &Statements) -> Result<StkIdx, Box<dyn Error>> {
-        Ok(self.compile_stmts(stmts)?.unwrap_or_else(|| {
-            let id = self.add_literal(Value::Uint256(U256::zero()));
-            self.add_load_literal_inst(id);
-            self.stack_top()
-        }))
-    }
+    fn compile(&mut self, stmts: &'a Statements<'a>) -> Result<(), Box<dyn std::error::Error>> {
+        self.init_memory()?;
+        self.compile_stmts(stmts, true)?;
+        // compile the functions
 
-    fn compile(&mut self, stmts: &Statements) -> Result<(), Box<dyn std::error::Error>> {
-        let name = "main";
-        self.compile_stmts_or_zero(stmts)?;
-        self.add_fn(name.to_string(), &[]);
-        Ok(())
-    }
-
-    fn disasm(&self, writer: &mut impl Write) -> std::io::Result<()> {
-        for (name, fn_def) in &self.funcs {
-            writeln!(writer, "Function {name:?}:")?;
-            fn_def.disasm(writer)?;
+        for (selector, fn_stmts) in self.funcs.clone().iter() {
+            self.compile_func(*selector, fn_stmts)?;
         }
         Ok(())
     }
+
+    fn compile_func<'b>(
+        &mut self,
+        selector: [u8; 4],
+        fn_stmts: &'b FnStatements<'b>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // allocate the current pc
+        self.instructions.iter_mut().for_each(|inst| {
+            if inst.op == OpCode::Push32 {
+                if let Some(ArgValue::FnSelector(fn_selector)) = inst.arg0 {
+                    if fn_selector == selector {
+                        // set the pc
+                        inst.arg0 = Some(ArgValue::U256(U256::from(self.pc)));
+                    }
+                }
+            }
+        });
+
+        // add jumpdest
+        self.instructions
+            .push(Instruction::new(OpCode::JumpDest, None));
+        // put args into memory
+        for arg in &fn_stmts.args {
+            // self.save_memory(arg.name.clone(), &Value::Uint256(U256::zero()))?;
+        }
+
+        // self.compile_stmts(stmts, false)?;
+        Ok(())
+    }
+
+    // fn extract_value_from_calldata(
+    //     &mut self,
+    //     offset: usize,
+    //     arg: &Arg,
+    // ) -> Result<Value, Box<dyn Error>> {
+    //     self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(offset))));
+    //     self.add_inst(OpCode::CalldataLoad, None);
+
+    //     let value = match arg.value_type {
+    //         TypeDecl::Uint256 => Value::Uint256(U256::from_big_endian(arg.)),
+    //         TypeDecl::Str => {}
+    //     };
+
+    //     self.memories.insert(
+    //         arg.name.clone(),
+    //         MemoryVariableTable {
+    //             value: v.clone(),
+    //             address: self.memory_pointer,
+    //         },
+    //     );
+
+    //     let value = v.to_vec_u8();
+    //     self.add_inst(
+    //         OpCode::Push32,
+    //         Some(ArgValue::U256(U256::from_big_endian(&value))),
+    //     );
+    //     self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
+    //     self.add_inst(OpCode::MStore, None);
+    //     self.memory_pointer += U256::from(32);
+    //     Ok(())
+    // }
+
+    fn init_memory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.memory_pointer = U256::from_str_radix("80", 16)?;
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
+        self.add_inst(
+            OpCode::Push32,
+            Some(ArgValue::U256(U256::from_str_radix("40", 16)?)),
+        );
+        self.add_inst(OpCode::MStore, None);
+        Ok(())
+    }
+}
+
+fn create_func_selector(name: &str, args: Vec<&str>) -> [u8; 4] {
+    let mut func = name.to_string();
+    func += "(";
+    for arg in args {
+        func += arg;
+    }
+    func += ")";
+
+    let mut full_selector = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(func.as_bytes());
+    hasher.finalize(&mut full_selector);
+    full_selector[0..4]
+        .try_into()
+        .expect("Slice with wrong length")
 }
 
 fn write_program(source: &str, writer: &mut impl Write) -> Result<(), Box<dyn std::error::Error>> {
@@ -579,152 +823,15 @@ fn write_program(source: &str, writer: &mut impl Write) -> Result<(), Box<dyn st
 
     compiler.compile(&stmts)?;
 
-    compiler.disasm(&mut std::io::stdout())?;
+    // compiler.disasm(&mut std::io::stdout())?;
 
-    compiler.write_funcs(writer)?;
+    // compiler.write_funcs(writer)?;
 
     Ok(())
 }
 
-struct ByteCode {
-    funcs: HashMap<String, FnDef>,
-}
-
-impl ByteCode {
-    fn new() -> Self {
-        Self {
-            funcs: HashMap::new(),
-        }
-    }
-
-    fn read_funcs(&mut self, reader: &mut impl Read) -> std::io::Result<()> {
-        let num_funcs = deserialize_size(reader)?;
-        let mut funcs: HashMap<_, _> = standard_functions()
-            .into_iter()
-            .filter_map(|(name, f)| {
-                if let FnDecl::Native(f) = f {
-                    Some((name, FnDef::Native(f)))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for _ in 0..num_funcs {
-            let name = deserialize_str(reader)?;
-            funcs.insert(name, FnDef::User(FnByteCode::deserialize(reader)?));
-        }
-        self.funcs = funcs;
-        Ok(())
-    }
-
-    fn interpret(
-        &self,
-        fn_name: &str,
-        args: &[Value],
-    ) -> Result<Value, Box<dyn std::error::Error>> {
-        let fn_def = self
-            .funcs
-            .get(fn_name)
-            .ok_or_else(|| format!("Function {fn_name:?} was not found"))?;
-        let fn_def = match fn_def {
-            FnDef::User(user) => user,
-            FnDef::Native(n) => return Ok((*n.code)(args)),
-        };
-        let mut stack = args.to_vec();
-        let mut ip = 0;
-
-        while ip < fn_def.instructions.len() {
-            let instruction = &fn_def.instructions[ip];
-            match instruction.op {
-                OpCode::LoadLiteral => {
-                    stack.push(fn_def.literals[instruction.arg0 as usize].clone());
-                }
-                OpCode::Store => {
-                    let idx = stack.len() - instruction.arg0 as usize - 1;
-                    let value = stack.pop().expect("Store needs an argument");
-                    stack[idx] = value;
-                }
-                OpCode::Copy => {
-                    stack.push(stack[stack.len() - instruction.arg0 as usize - 1].clone());
-                }
-                OpCode::Dup => {
-                    let top = stack.last().unwrap().clone();
-                    stack.extend((0..instruction.arg0).map(|_| top.clone()));
-                }
-                OpCode::Add => {}
-                OpCode::Sub => {}
-                OpCode::Mul => {}
-                OpCode::Div => {}
-                OpCode::Call => {
-                    let args = &stack[stack.len() - instruction.arg0 as usize..];
-                    let fname = &stack[stack.len() - instruction.arg0 as usize - 1];
-                    let Value::Str(fname) = fname else {
-                        panic!("Function name shall be a string: {fname:?}");
-                    };
-                    let res = self.interpret(fname, args)?;
-                    stack.resize(
-                        stack.len() - instruction.arg0 as usize - 1,
-                        Value::Uint256(U256::zero()),
-                    );
-                    stack.push(res);
-                }
-                OpCode::Jmp => {
-                    ip = instruction.arg0 as usize;
-                    continue;
-                }
-                OpCode::Jf => {
-                    let cond = stack.pop().expect("Jf needs an argument");
-                }
-                OpCode::Lt => {}
-                OpCode::Pop => {
-                    stack.resize(stack.len() - instruction.arg0 as usize, Value::default());
-                }
-                OpCode::Ret => {
-                    return Ok(stack
-                        .get(stack.len() - instruction.arg0 as usize - 1)
-                        .ok_or_else(|| "Stack underflow".to_string())?
-                        .clone());
-                }
-            }
-            ip += 1;
-        }
-
-        Ok(stack.pop().ok_or_else(|| "Stack underflow".to_string())?)
-    }
-
-    fn interpret_bin_op_str(
-        &self,
-        stack: &mut Vec<Value>,
-        op_uint256: impl FnOnce(U256, U256) -> U256,
-        op_str: impl FnOnce(&str, &str) -> Option<String>,
-    ) {
-        use Value::*;
-        let rhs = stack.pop().expect("Stack underflow");
-        let lhs = stack.pop().expect("Stack underflow");
-        let res = match (lhs, rhs) {
-            (Uint256(lhs), Uint256(rhs)) => Uint256(op_uint256(lhs, rhs)),
-
-            (Str(lhs), Str(rhs)) => {
-                if let Some(res) = op_str(&lhs, &rhs) {
-                    Str(res)
-                } else {
-                    panic!("Incompatible types in binary op: {lhs:?} and {rhs:?}");
-                }
-            }
-            (lhs, rhs) => panic!("Incompatible types in binary op: {lhs:?} and {rhs:?}"),
-        };
-        stack.push(res);
-    }
-}
-
 fn compile(writer: &mut impl Write, source: String) -> Result<(), Box<dyn std::error::Error>> {
     write_program(&source, writer)
-}
-
-fn read_program(reader: &mut impl Read) -> std::io::Result<ByteCode> {
-    let mut bytecode = ByteCode::new();
-    bytecode.read_funcs(reader)?;
-    Ok(bytecode)
 }
 
 enum FnDef {
@@ -735,7 +842,7 @@ enum FnDef {
 type Functions<'src> = HashMap<String, FnDecl<'src>>;
 
 pub fn standard_functions<'src>() -> Functions<'src> {
-    let mut funcs = Functions::new();
+    let funcs = Functions::new();
 
     funcs
 }
@@ -761,9 +868,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Compile Error: {e}");
         return Ok(());
     }
-    let bytecode = read_program(&mut std::io::Cursor::new(&mut buf))?;
-    if let Err(e) = bytecode.interpret("main", &[]) {
-        eprintln!("Runtime error: {e:?}");
-    }
+    // let bytecode = read_program(&mut std::io::Cursor::new(&mut buf))?;
+    // if let Err(e) = bytecode.interpret("main", &[]) {
+    //     eprintln!("Runtime error: {e:?}");
+    // }
     Ok(())
 }
