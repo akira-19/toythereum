@@ -125,7 +125,7 @@ struct MemoryVariableTable {
 
 #[derive(Debug, Clone)]
 struct StorageVariableTable {
-    value: Valuable,
+    value_type: TypeDecl,
     slot: U256,
 }
 
@@ -250,78 +250,68 @@ impl<'a> Compiler<'a> {
 
     fn load_storage(&mut self, v: &StorageVariableTable) -> Result<(), Box<dyn Error>> {
         self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.slot)));
-        match &v.value {
-            Valuable::Value(value) => {
-                match value {
-                    Value::Uint256(_) => {
-                        self.add_inst(OpCode::SLoad, None);
-                    }
-                    Value::Str(_) => {
-                        // retrieve the length from the slot
-                        self.add_inst(OpCode::SLoad, None);
+        match &v.value_type {
+            // Valuable::Value(value) => {
+            //     match value {
+            //         Value::Uint256(_) => {
+            //             self.add_inst(OpCode::SLoad, None);
+            //         }
+            //         Value::Str(_) => {
+            //             // retrieve the length from the slot
+            //             self.add_inst(OpCode::SLoad, None);
 
-                        // get pointer to the slot of the string
-                        let mut hasher = Keccak::v256();
-                        let mut pointer = [0u8; 32];
-                        hasher.update(&v.slot.to_big_endian().to_vec());
-                        hasher.finalize(&mut pointer);
-                        self.add_inst(
-                            OpCode::Push32,
-                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                        );
+            //             // get pointer to the slot of the string
+            //             let mut hasher = Keccak::v256();
+            //             let mut pointer = [0u8; 32];
+            //             hasher.update(&v.slot.to_big_endian().to_vec());
+            //             hasher.finalize(&mut pointer);
+            //             self.add_inst(
+            //                 OpCode::Push32,
+            //                 Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+            //             );
 
-                        // load the string from the slot
-                        self.add_inst(OpCode::SLoad, None);
+            //             // load the string from the slot
+            //             self.add_inst(OpCode::SLoad, None);
 
-                        // TODO: implement the process if the string is longer than 32 bytes
-                    }
-                    Value::Bool(_) => {
-                        self.add_inst(OpCode::SLoad, None);
-                    }
-                }
+            //             // TODO: implement the process if the string is longer than 32 bytes
+            //         }
+            //         Value::Bool(_) => {
+            //             self.add_inst(OpCode::SLoad, None);
+            //         }
+            //     }
+            // }
+            TypeDecl::Uint256 => {
+                self.add_inst(OpCode::SLoad, None);
             }
-            Valuable::Undetermined(value_type) => {
-                match value_type {
-                    TypeDecl::Uint256 => {
-                        self.add_inst(OpCode::SLoad, None);
-                    }
-                    TypeDecl::Str => {
-                        // retrieve the length from the slot
-                        self.add_inst(OpCode::SLoad, None);
+            TypeDecl::Str => {
+                // retrieve the length from the slot
+                self.add_inst(OpCode::SLoad, None);
 
-                        // get pointer to the slot of the string
-                        let mut hasher = Keccak::v256();
-                        let mut pointer = [0u8; 32];
-                        hasher.update(&v.slot.to_big_endian().to_vec());
-                        hasher.finalize(&mut pointer);
-                        self.add_inst(
-                            OpCode::Push32,
-                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                        );
+                // get pointer to the slot of the string
+                let mut hasher = Keccak::v256();
+                let mut pointer = [0u8; 32];
+                hasher.update(&v.slot.to_big_endian().to_vec());
+                hasher.finalize(&mut pointer);
+                self.add_inst(
+                    OpCode::Push32,
+                    Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                );
 
-                        // load the string from the slot
-                        self.add_inst(OpCode::SLoad, None);
+                // load the string from the slot
+                self.add_inst(OpCode::SLoad, None);
 
-                        // TODO: implement the process if the string is longer than 32 bytes
-                    }
-                    TypeDecl::Bool => {
-                        self.add_inst(OpCode::SLoad, None);
-                    }
-                }
+                // TODO: implement the process if the string is longer than 32 bytes
             }
-        };
+            TypeDecl::Bool => {
+                self.add_inst(OpCode::SLoad, None);
+            }
+        }
 
         Ok(())
     }
 
     fn save_storage(&mut self, name: String, v: &Valuable) -> Result<(), Box<dyn Error>> {
-        self.storages.insert(
-            name,
-            StorageVariableTable {
-                value: v.clone(),
-                slot: self.slot,
-            },
-        );
+        let value_type;
         match v {
             Valuable::Value(value) => {
                 match value {
@@ -330,6 +320,7 @@ impl<'a> Compiler<'a> {
                         self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
                         self.add_inst(OpCode::SStore, None);
                         self.slot += U256::one();
+                        value_type = TypeDecl::Uint256;
                     }
                     Value::Str(value) => {
                         // store the length of the string
@@ -357,6 +348,7 @@ impl<'a> Compiler<'a> {
                             Some(ArgValue::U256(U256::from_big_endian(&pointer))),
                         );
                         self.add_inst(OpCode::SStore, None);
+                        value_type = TypeDecl::Str;
                     }
                     Value::Bool(value) => {
                         let num = if *value { U256::one() } else { U256::zero() };
@@ -364,11 +356,13 @@ impl<'a> Compiler<'a> {
                         self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
                         self.add_inst(OpCode::SStore, None);
                         self.slot += U256::one();
+                        value_type = TypeDecl::Bool;
                     }
                 }
             }
-            Valuable::Undetermined(value_type) => {
-                match value_type {
+            Valuable::Undetermined(type_decl) => {
+                value_type = type_decl.clone();
+                match type_decl {
                     TypeDecl::Uint256 => {
                         self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
                         self.add_inst(OpCode::SStore, None);
@@ -408,98 +402,58 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        self.storages.insert(
+            name,
+            StorageVariableTable {
+                value_type,
+                slot: self.slot,
+            },
+        );
+
         Ok(())
     }
 
-    fn update_storage(&mut self, name: String, v: &Valuable) -> Result<(), Box<dyn Error>> {
-        if let Some(s) = self.storages.get_mut(&name) {
-            s.value = v.clone();
+    fn update_storage(&mut self, name: String) -> Result<(), Box<dyn Error>> {
+        if let Some(s) = self.storages.get(&name) {
             let slot = s.slot;
-            match v {
-                Valuable::Value(value) => {
-                    match value {
-                        Value::Uint256(value) => {
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
-                        }
-                        Value::Str(value) => {
-                            // store the length of the string
-                            let len = value.clone().into_bytes().len();
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
-
-                            // store the string
-                            // TODO: implement the process if the string is longer than 32 bytes
-                            // but for now, only one slot will be used
-                            let mut hasher = Keccak::v256();
-                            let mut pointer = [0u8; 32];
-                            hasher.update(&self.slot.to_big_endian().to_vec());
-                            hasher.finalize(&mut pointer);
-                            self.add_inst(
-                                OpCode::Push32,
-                                Some(ArgValue::U256(U256::from_big_endian(
-                                    &value.clone().into_bytes(),
-                                ))),
-                            );
-                            self.add_inst(
-                                OpCode::Push32,
-                                Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                            );
-                            self.add_inst(OpCode::SStore, None);
-                        }
-                        Value::Bool(value) => {
-                            let num = if *value { U256::one() } else { U256::zero() };
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
-                        }
-                    }
+            match s.value_type {
+                TypeDecl::Uint256 => {
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+                    self.slot += U256::one();
                 }
-                Valuable::Undetermined(value_type) => {
-                    match value_type {
-                        TypeDecl::Uint256 => {
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
-                        }
-                        TypeDecl::Str => {
-                            // store the length of the string
-                            // data is already stored in the stack
-                            // top of the stack is the length of the string
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
+                TypeDecl::Str => {
+                    // store the length of the string
+                    // data is already stored in the stack
+                    // top of the stack is the length of the string
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+                    self.slot += U256::one();
 
-                            // store the string
-                            // TODO: implement some process if the string is longer than 32 bytes
-                            // but for now, only one slot will be used
+                    // store the string
+                    // TODO: implement some process if the string is longer than 32 bytes
+                    // but for now, only one slot will be used
 
-                            let mut hasher = Keccak::v256();
-                            let mut pointer = [0u8; 32];
-                            hasher.update(&self.slot.to_big_endian().to_vec());
-                            hasher.finalize(&mut pointer);
+                    let mut hasher = Keccak::v256();
+                    let mut pointer = [0u8; 32];
+                    hasher.update(&self.slot.to_big_endian().to_vec());
+                    hasher.finalize(&mut pointer);
 
-                            // data is already stored on the top of the stack
-                            // if it is longer than 32 bytes, it should be stored in multiple slots
-                            self.add_inst(
-                                OpCode::Push32,
-                                Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                            );
-                            self.add_inst(OpCode::SStore, None);
-                        }
-                        TypeDecl::Bool => {
-                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                            self.add_inst(OpCode::SStore, None);
-                            self.slot += U256::one();
-                        }
-                    }
+                    // data is already stored on the top of the stack
+                    // if it is longer than 32 bytes, it should be stored in multiple slots
+                    self.add_inst(
+                        OpCode::Push32,
+                        Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                    );
+                    self.add_inst(OpCode::SStore, None);
+                }
+                TypeDecl::Bool => {
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                    self.add_inst(OpCode::SStore, None);
+                    self.slot += U256::one();
                 }
             }
+
             Ok(())
         } else {
             Err(format!("Variable not found: {name:?}").into())
@@ -607,7 +561,7 @@ impl<'a> Compiler<'a> {
 
                 if let Some(v) = self.storages.get(&ident.fragment().to_string()).cloned() {
                     self.load_storage(&v)?;
-                    return Ok(v.value);
+                    return Ok(Valuable::Undetermined(v.value_type));
                 } else {
                     return Err(format!("Variable not found: {ident:?}").into());
                 };
@@ -689,10 +643,8 @@ impl<'a> Compiler<'a> {
                         self.update_memory(var_name.clone(), &result, selector)?;
                     }
 
-                    if let Some(data) = self.storages.get_mut(&var_name) {
-                        data.value = result.clone();
-                        let value = data.value.clone();
-                        self.update_storage(var_name, &value)?;
+                    if let Some(_) = self.storages.get(&var_name) {
+                        self.update_storage(var_name)?;
                     } else {
                         return Err(format!("Variable not found: {name:?}").into());
                     }
