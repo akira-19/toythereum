@@ -4,10 +4,10 @@ use std::{
     error::Error,
     fmt::Display,
     fs::File,
-    hash::Hash,
     io::{BufReader, BufWriter, Read, Write},
 };
 
+use nom::Err;
 use primitive_types::U256;
 use tiny_keccak::{keccakf, Hasher, Keccak};
 
@@ -21,6 +21,8 @@ pub enum OpCode {
     Mul = 0x02,
     Sub = 0x03,
     Div = 0x04,
+
+    Lt = 0x10,
 
     EQ = 0x14,
     SHR = 0x1C,
@@ -76,17 +78,6 @@ impl Instruction {
     fn new(op: OpCode, arg0: Option<ArgValue>) -> Self {
         Self { op, arg0 }
     }
-
-    // fn serialize(&self, writer: &mut impl Write) -> Result<(), std::io::Error> {
-    //     writer.write_all(&[self.op as u8, self.arg0])?;
-    //     Ok(())
-    // }
-
-    // fn deserialize(reader: &mut impl Read) -> Result<Self, std::io::Error> {
-    //     let mut buf = [0u8; 2];
-    //     reader.read_exact(&mut buf)?;
-    //     Ok(Self::new(buf[0].into(), buf[1]))
-    // }
 }
 
 fn serialize_size(sz: usize, writer: &mut impl Write) -> std::io::Result<()> {
@@ -120,125 +111,21 @@ struct StkIdx(usize);
 /// Instruction Pointer
 struct InstPtr(usize);
 
-struct FnByteCode {
-    args: Vec<String>,
-    literals: Vec<Value>,
-    instructions: Vec<Instruction>,
-}
-
-impl FnByteCode {
-    fn write_args(args: &[String], writer: &mut impl Write) -> std::io::Result<()> {
-        serialize_size(args.len(), writer)?;
-        for arg in args {
-            serialize_str(arg, writer)?;
-        }
-        Ok(())
-    }
-
-    fn write_literals(literals: &[Value], writer: &mut impl Write) -> std::io::Result<()> {
-        serialize_size(literals.len(), writer)?;
-        for value in literals {
-            value.serialize(writer)?;
-        }
-        Ok(())
-    }
-
-    // fn write_insts(instructions: &[Instruction], writer: &mut impl Write) -> std::io::Result<()> {
-    //     serialize_size(instructions.len(), writer)?;
-    //     for instruction in instructions {
-    //         instruction.serialize(writer).unwrap();
-    //     }
-    //     Ok(())
-    // }
-
-    // fn serialize(&self, writer: &mut impl Write) -> std::io::Result<()> {
-    //     Self::write_args(&self.args, writer)?;
-    //     Self::write_literals(&self.literals, writer)?;
-    //     Self::write_insts(&self.instructions, writer)?;
-    //     Ok(())
-    // }
-
-    fn read_args(reader: &mut impl Read) -> std::io::Result<Vec<String>> {
-        let num_args = deserialize_size(reader)?;
-        let mut args = Vec::with_capacity(num_args);
-        for _ in 0..num_args {
-            args.push(deserialize_str(reader)?);
-        }
-        Ok(args)
-    }
-
-    fn read_literals(reader: &mut impl Read) -> std::io::Result<Vec<Value>> {
-        let num_literals = deserialize_size(reader)?;
-        let mut literals = Vec::with_capacity(num_literals);
-        for _ in 0..num_literals {
-            literals.push(Value::deserialize(reader)?);
-        }
-        Ok(literals)
-    }
-
-    // fn read_instructions(reader: &mut impl Read) -> std::io::Result<Vec<Instruction>> {
-    //     let num_instructions = deserialize_size(reader)?;
-    //     let mut instructions = Vec::with_capacity(num_instructions);
-    //     for _ in 0..num_instructions {
-    //         let inst = Instruction::deserialize(reader)?;
-    //         instructions.push(inst);
-    //     }
-    //     Ok(instructions)
-    // }
-
-    // fn deserialize(reader: &mut impl Read) -> std::io::Result<Self> {
-    //     let args = Self::read_args(reader)?;
-    //     let literals = Self::read_literals(reader)?;
-    //     let instructions = Self::read_instructions(reader)?;
-    //     Ok(Self {
-    //         args,
-    //         literals,
-    //         instructions,
-    //     })
-    // }
-
-    fn disasm(&self, writer: &mut impl Write) -> std::io::Result<()> {
-        disasm_common(&self.literals, &self.instructions, writer)
-    }
-}
-
-fn disasm_common(
-    literals: &[Value],
-    instructions: &[Instruction],
-    writer: &mut impl Write,
-) -> std::io::Result<()> {
-    use OpCode::*;
-    writeln!(writer, "  Literals [{}]", literals.len())?;
-    for (i, con) in literals.iter().enumerate() {
-        writeln!(writer, "    [{i}] {}", *con)?;
-    }
-
-    writeln!(writer, "  Instructions [{}]", instructions.len())?;
-    // for (i, inst) in instructions.iter().enumerate() {
-    //     match inst.op {
-    //         LoadLiteral => writeln!(
-    //             writer,
-    //             "    [{i}] {:?} {} ({:?})",
-    //             inst.op, inst.arg0, literals[inst.arg0 as usize]
-    //         )?,
-    //         Copy | Dup | Call | Jmp | Jf | Pop | Store | Ret => {
-    //             writeln!(writer, "    [{i}] {:?} {}", inst.op, inst.arg0)?
-    //         }
-    //         _ => writeln!(writer, "    [{i}] {:?}", inst.op)?,
-    //     }
-    // }
-    Ok(())
+#[derive(Debug, Clone)]
+enum Valuable {
+    Value(Value),
+    Undetermined(TypeDecl),
 }
 
 #[derive(Debug, Clone)]
 struct MemoryVariableTable {
-    value: Value,
+    value: Valuable,
     address: U256,
 }
 
 #[derive(Debug, Clone)]
 struct StorageVariableTable {
-    value: Value,
+    value: Valuable,
     slot: U256,
 }
 
@@ -249,17 +136,17 @@ struct Arg {
 }
 
 #[derive(Debug, Clone)]
-struct FnStatements<'a> {
-    statements: Vec<Statement<'a>>,
+struct Function<'a> {
+    statements: &'a Vec<Statement<'a>>,
     args: Vec<Arg>,
+    memories: HashMap<String, MemoryVariableTable>,
+    memory_pointer: U256,
 }
 
 struct Compiler<'a> {
     literals: Vec<Value>,
     instructions: Vec<Instruction>,
-    funcs: HashMap<[u8; 4], FnStatements<'a>>,
-    memories: HashMap<String, MemoryVariableTable>,
-    memory_pointer: U256,
+    funcs: HashMap<[u8; 4], Function<'a>>,
     storages: HashMap<String, StorageVariableTable>,
     slot: U256,
     pc: usize,
@@ -271,8 +158,6 @@ impl<'a> Compiler<'a> {
             literals: vec![],
             instructions: vec![],
             funcs: HashMap::new(),
-            memories: HashMap::new(),
-            memory_pointer: U256::zero(),
             storages: HashMap::new(),
             slot: U256::zero(),
             pc: 0,
@@ -309,11 +194,382 @@ impl<'a> Compiler<'a> {
         InstPtr(inst)
     }
 
-    fn compile_expr(&mut self, ex: &Expression) -> Result<Value, Box<dyn Error>> {
+    fn load_memory(&mut self, v: &MemoryVariableTable) -> Result<(), Box<dyn Error>> {
+        // TODO: if the value is dynamic type, the memory should be loaded from multiple slots
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.address)));
+        self.add_inst(OpCode::MLoad, None);
+        Ok(())
+    }
+
+    fn save_memory(
+        &mut self,
+        name: String,
+        v: &Valuable,
+        selector: [u8; 4],
+    ) -> Result<(U256, U256), Box<dyn Error>> {
+        // TODO: if the value is dynamic type, we need to user more than one memory slot
+        // but for now, only one slot will be used
+
+        let func = self.find_func(selector)?;
+        let memory_pointer = func.memory_pointer.clone();
+
+        func.memories.insert(
+            name,
+            MemoryVariableTable {
+                value: v.clone(),
+                address: memory_pointer,
+            },
+        );
+        func.memory_pointer += U256::from(32);
+
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(memory_pointer)));
+        self.add_inst(OpCode::MStore, None);
+
+        Ok((memory_pointer, U256::from(32)))
+    }
+
+    fn update_memory(
+        &mut self,
+        name: String,
+        v: &Valuable,
+        selector: [u8; 4],
+    ) -> Result<(), Box<dyn Error>> {
+        let func = self.find_func(selector)?;
+        if let Some(m) = func.memories.get_mut(&name) {
+            let address = m.address;
+            m.value = v.clone();
+
+            // TODO: if the value is dynamic type, new memory slots might be needed
+            self.add_inst(OpCode::Push32, Some(ArgValue::U256(address)));
+            self.add_inst(OpCode::MStore, None);
+            Ok(())
+        } else {
+            Err(format!("Variable not found: {name:?}").into())
+        }
+    }
+
+    fn load_storage(&mut self, v: &StorageVariableTable) -> Result<(), Box<dyn Error>> {
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.slot)));
+        match &v.value {
+            Valuable::Value(value) => {
+                match value {
+                    Value::Uint256(_) => {
+                        self.add_inst(OpCode::SLoad, None);
+                    }
+                    Value::Str(_) => {
+                        // retrieve the length from the slot
+                        self.add_inst(OpCode::SLoad, None);
+
+                        // get pointer to the slot of the string
+                        let mut hasher = Keccak::v256();
+                        let mut pointer = [0u8; 32];
+                        hasher.update(&v.slot.to_big_endian().to_vec());
+                        hasher.finalize(&mut pointer);
+                        self.add_inst(
+                            OpCode::Push32,
+                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                        );
+
+                        // load the string from the slot
+                        self.add_inst(OpCode::SLoad, None);
+
+                        // TODO: implement the process if the string is longer than 32 bytes
+                    }
+                    Value::Bool(_) => {
+                        self.add_inst(OpCode::SLoad, None);
+                    }
+                }
+            }
+            Valuable::Undetermined(value_type) => {
+                match value_type {
+                    TypeDecl::Uint256 => {
+                        self.add_inst(OpCode::SLoad, None);
+                    }
+                    TypeDecl::Str => {
+                        // retrieve the length from the slot
+                        self.add_inst(OpCode::SLoad, None);
+
+                        // get pointer to the slot of the string
+                        let mut hasher = Keccak::v256();
+                        let mut pointer = [0u8; 32];
+                        hasher.update(&v.slot.to_big_endian().to_vec());
+                        hasher.finalize(&mut pointer);
+                        self.add_inst(
+                            OpCode::Push32,
+                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                        );
+
+                        // load the string from the slot
+                        self.add_inst(OpCode::SLoad, None);
+
+                        // TODO: implement the process if the string is longer than 32 bytes
+                    }
+                    TypeDecl::Bool => {
+                        self.add_inst(OpCode::SLoad, None);
+                    }
+                }
+            }
+        };
+
+        Ok(())
+    }
+
+    fn save_storage(&mut self, name: String, v: &Valuable) -> Result<(), Box<dyn Error>> {
+        self.storages.insert(
+            name,
+            StorageVariableTable {
+                value: v.clone(),
+                slot: self.slot,
+            },
+        );
+        match v {
+            Valuable::Value(value) => {
+                match value {
+                    Value::Uint256(value) => {
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+                    }
+                    Value::Str(value) => {
+                        // store the length of the string
+                        let len = value.clone().into_bytes().len();
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+
+                        // store the string
+                        // TODO: implement the process if the string is longer than 32 bytes
+                        // but for now, only one slot will be used
+                        let mut hasher = Keccak::v256();
+                        let mut pointer = [0u8; 32];
+                        hasher.update(&self.slot.to_big_endian().to_vec());
+                        hasher.finalize(&mut pointer);
+                        self.add_inst(
+                            OpCode::Push32,
+                            Some(ArgValue::U256(U256::from_big_endian(
+                                &value.clone().into_bytes(),
+                            ))),
+                        );
+                        self.add_inst(
+                            OpCode::Push32,
+                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                        );
+                        self.add_inst(OpCode::SStore, None);
+                    }
+                    Value::Bool(value) => {
+                        let num = if *value { U256::one() } else { U256::zero() };
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+                    }
+                }
+            }
+            Valuable::Undetermined(value_type) => {
+                match value_type {
+                    TypeDecl::Uint256 => {
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+                    }
+                    TypeDecl::Str => {
+                        // store the length of the string
+                        // data is already stored in the stack
+                        // top of the stack is the length of the string
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+
+                        // store the string
+                        // TODO: implement some process if the string is longer than 32 bytes
+                        // but for now, only one slot will be used
+
+                        let mut hasher = Keccak::v256();
+                        let mut pointer = [0u8; 32];
+                        hasher.update(&self.slot.to_big_endian().to_vec());
+                        hasher.finalize(&mut pointer);
+
+                        // data is already stored on the top of the stack
+                        // if it is longer than 32 bytes, it should be stored in multiple slots
+                        self.add_inst(
+                            OpCode::Push32,
+                            Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                        );
+                        self.add_inst(OpCode::SStore, None);
+                    }
+                    TypeDecl::Bool => {
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                        self.add_inst(OpCode::SStore, None);
+                        self.slot += U256::one();
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn update_storage(&mut self, name: String, v: &Valuable) -> Result<(), Box<dyn Error>> {
+        if let Some(s) = self.storages.get_mut(&name) {
+            s.value = v.clone();
+            let slot = s.slot;
+            match v {
+                Valuable::Value(value) => {
+                    match value {
+                        Value::Uint256(value) => {
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+                        }
+                        Value::Str(value) => {
+                            // store the length of the string
+                            let len = value.clone().into_bytes().len();
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+
+                            // store the string
+                            // TODO: implement the process if the string is longer than 32 bytes
+                            // but for now, only one slot will be used
+                            let mut hasher = Keccak::v256();
+                            let mut pointer = [0u8; 32];
+                            hasher.update(&self.slot.to_big_endian().to_vec());
+                            hasher.finalize(&mut pointer);
+                            self.add_inst(
+                                OpCode::Push32,
+                                Some(ArgValue::U256(U256::from_big_endian(
+                                    &value.clone().into_bytes(),
+                                ))),
+                            );
+                            self.add_inst(
+                                OpCode::Push32,
+                                Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                            );
+                            self.add_inst(OpCode::SStore, None);
+                        }
+                        Value::Bool(value) => {
+                            let num = if *value { U256::one() } else { U256::zero() };
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+                        }
+                    }
+                }
+                Valuable::Undetermined(value_type) => {
+                    match value_type {
+                        TypeDecl::Uint256 => {
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+                        }
+                        TypeDecl::Str => {
+                            // store the length of the string
+                            // data is already stored in the stack
+                            // top of the stack is the length of the string
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+
+                            // store the string
+                            // TODO: implement some process if the string is longer than 32 bytes
+                            // but for now, only one slot will be used
+
+                            let mut hasher = Keccak::v256();
+                            let mut pointer = [0u8; 32];
+                            hasher.update(&self.slot.to_big_endian().to_vec());
+                            hasher.finalize(&mut pointer);
+
+                            // data is already stored on the top of the stack
+                            // if it is longer than 32 bytes, it should be stored in multiple slots
+                            self.add_inst(
+                                OpCode::Push32,
+                                Some(ArgValue::U256(U256::from_big_endian(&pointer))),
+                            );
+                            self.add_inst(OpCode::SStore, None);
+                        }
+                        TypeDecl::Bool => {
+                            self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
+                            self.add_inst(OpCode::SStore, None);
+                            self.slot += U256::one();
+                        }
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            Err(format!("Variable not found: {name:?}").into())
+        }
+    }
+
+    fn bin_op(
+        &mut self,
+        op: OpCode,
+        lhs: &Expression,
+        rhs: &Expression,
+        selector: Option<[u8; 4]>,
+    ) -> Result<Valuable, Box<dyn Error>> {
+        let r_value = self.compile_expr(rhs, selector)?;
+        let l_value = self.compile_expr(lhs, selector)?;
+
+        match (l_value, r_value) {
+            (Valuable::Value(l), Valuable::Value(r)) => {
+                let l = match l {
+                    Value::Uint256(v) => v,
+                    _ => return Err("Invalid type".into()),
+                };
+                let r = match r {
+                    Value::Uint256(v) => v,
+                    _ => return Err("Invalid type".into()),
+                };
+                let result = match op {
+                    OpCode::Add => Value::Uint256(l + r),
+                    OpCode::Sub => Value::Uint256(l - r),
+                    OpCode::Mul => Value::Uint256(l * r),
+                    OpCode::Div => {
+                        if r == U256::zero() {
+                            return Err("Division by zero".into());
+                        }
+                        Value::Uint256(l / r)
+                    }
+                    OpCode::Lt => {
+                        if l < r {
+                            Value::Bool(true)
+                        } else {
+                            Value::Bool(false)
+                        }
+                    }
+                    _ => return Err("Invalid opcode".into()),
+                };
+                Ok(Valuable::Value(result))
+            }
+            (Valuable::Value(Value::Uint256(_)), Valuable::Undetermined(TypeDecl::Uint256))
+            | (Valuable::Undetermined(TypeDecl::Uint256), Valuable::Value(Value::Uint256(_))) => {
+                self.add_inst(op, None);
+                Ok(Valuable::Undetermined(TypeDecl::Uint256))
+            }
+            _ => Err("Invalid type".into()),
+        }
+    }
+
+    fn compile_expr(
+        &mut self,
+        ex: &Expression,
+        selector: Option<[u8; 4]>,
+    ) -> Result<Valuable, Box<dyn Error>> {
+        let func = if let Some(value) = selector {
+            Some(self.find_func(value)?.clone())
+        } else {
+            None
+        };
         Ok(match &ex.expr {
             ExprEnum::NumLiteral(num) => {
                 self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(*num))));
-                return Ok(Value::Uint256(U256::from(*num)));
+                return Ok(Valuable::Value(Value::Uint256(U256::from(*num))));
             }
             // ExprEnum::StrLiteral(str) => {
             //     let id = self.add_literal(Value::Str(str.clone()));
@@ -326,22 +582,42 @@ impl<'a> Compiler<'a> {
             //     self.stack_top()
             // }
             ExprEnum::Ident(ident) => {
-                if let Some(v) = self.memories.get(&ident.fragment().to_string()).cloned() {
-                    self.load_memory(&v)?;
-                    return Ok(v.value);
-                } else if let Some(v) = self.storages.get(&ident.fragment().to_string()).cloned() {
+                if let Some(f) = func {
+                    let arg = f
+                        .args
+                        .iter()
+                        .enumerate()
+                        .find(|(_, arg)| arg.name == ident.fragment().to_string());
+
+                    if let Some((i, v)) = arg {
+                        let offset = 32 * i + 4;
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(offset))));
+                        self.add_inst(OpCode::CalldataLoad, None);
+                        return Ok(Valuable::Undetermined(v.value_type.clone()));
+                    } else {
+                        let v = f.memories.get(&ident.fragment().to_string()).map(|v| {
+                            self.load_memory(v);
+                            v.value.clone()
+                        });
+                        if let Some(v) = v {
+                            return Ok(v);
+                        }
+                    }
+                }
+
+                if let Some(v) = self.storages.get(&ident.fragment().to_string()).cloned() {
                     self.load_storage(&v)?;
                     return Ok(v.value);
                 } else {
                     return Err(format!("Variable not found: {ident:?}").into());
                 };
             }
-            ExprEnum::Add(lhs, rhs) => self.bin_op(OpCode::Add, lhs, rhs)?,
-            ExprEnum::Sub(lhs, rhs) => self.bin_op(OpCode::Sub, lhs, rhs)?,
-            ExprEnum::Mul(lhs, rhs) => self.bin_op(OpCode::Mul, lhs, rhs)?,
-            ExprEnum::Div(lhs, rhs) => self.bin_op(OpCode::Div, lhs, rhs)?,
-            // ExprEnum::Gt(lhs, rhs) => self.bin_op(OpCode::Lt, rhs, lhs)?,
-            // ExprEnum::Lt(lhs, rhs) => self.bin_op(OpCode::Lt, lhs, rhs)?,
+            ExprEnum::Add(lhs, rhs) => self.bin_op(OpCode::Add, lhs, rhs, selector)?,
+            ExprEnum::Sub(lhs, rhs) => self.bin_op(OpCode::Sub, lhs, rhs, selector)?,
+            ExprEnum::Mul(lhs, rhs) => self.bin_op(OpCode::Mul, lhs, rhs, selector)?,
+            ExprEnum::Div(lhs, rhs) => self.bin_op(OpCode::Div, lhs, rhs, selector)?,
+            ExprEnum::Gt(lhs, rhs) => self.bin_op(OpCode::Lt, rhs, lhs, selector)?,
+            ExprEnum::Lt(lhs, rhs) => self.bin_op(OpCode::Lt, lhs, rhs, selector)?,
             // ExprEnum::FnInvoke(name, args) => {
             //     let stack_before_args = self.target_stack.len();
             //     let name = self.add_literal(Value::Str(name.to_string()));
@@ -384,250 +660,36 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn load_memory(&mut self, v: &MemoryVariableTable) -> Result<(), Box<dyn Error>> {
-        // TODO: if the value is dynamic type, we need to load the memory recursively?
-        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.address)));
-        self.add_inst(OpCode::MLoad, None);
-        Ok(())
-    }
-
-    fn save_memory(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
-        // TODO: if the value is dynamic type, we need to user more than one memory slot
-        // but for now, we only use one slot
-
-        self.memories.insert(
-            name,
-            MemoryVariableTable {
-                value: v.clone(),
-                address: self.memory_pointer,
-            },
-        );
-
-        let value = v.to_vec_u8();
-        self.add_inst(
-            OpCode::Push32,
-            Some(ArgValue::U256(U256::from_big_endian(&value))),
-        );
-        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
-        self.add_inst(OpCode::MStore, None);
-        self.memory_pointer += U256::from(32);
-        Ok(())
-    }
-
-    fn update_memory(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
-        if let Some(m) = self.memories.get_mut(&name) {
-            let address = m.address;
-            m.value = v.clone();
-            let value = v.to_vec_u8();
-
-            // TODO: if the value is dynamic type, new memory slots might be needed
-            self.add_inst(
-                OpCode::Push32,
-                Some(ArgValue::U256(U256::from_big_endian(&value))),
-            );
-            self.add_inst(OpCode::Push32, Some(ArgValue::U256(address)));
-            self.add_inst(OpCode::MStore, None);
-            Ok(())
-        } else {
-            Err(format!("Variable not found: {name:?}").into())
-        }
-    }
-
-    fn load_storage(&mut self, v: &StorageVariableTable) -> Result<(), Box<dyn Error>> {
-        self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.slot)));
-        match &v.value {
-            Value::Uint256(_) => {
-                self.add_inst(OpCode::SLoad, None);
-            }
-            Value::Str(_) => {
-                // retrieve the length from the slot
-                self.add_inst(OpCode::SLoad, None);
-
-                // get pointer to the slot of the string
-                let mut hasher = Keccak::v256();
-                let mut pointer = [0u8; 32];
-                hasher.update(&v.slot.to_big_endian().to_vec());
-                hasher.finalize(&mut pointer);
-                self.add_inst(
-                    OpCode::Push32,
-                    Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                );
-
-                // load the string from the slot
-                self.add_inst(OpCode::SLoad, None);
-
-                // TODO: implement the process if the string is longer than 32 bytes
-            }
-            Value::Bool(_) => {
-                self.add_inst(OpCode::SLoad, None);
-            }
-        }
-        Ok(())
-    }
-
-    fn save_storage(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
-        self.storages.insert(
-            name,
-            StorageVariableTable {
-                value: v.clone(),
-                slot: self.slot,
-            },
-        );
-        match v {
-            Value::Uint256(value) => {
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                self.add_inst(OpCode::SStore, None);
-                self.slot += U256::one();
-            }
-            Value::Str(value) => {
-                // store the length of the string
-                let len = v.to_vec_u8().len();
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                self.add_inst(OpCode::SStore, None);
-                self.slot += U256::one();
-
-                // store the string
-                // TODO: implement the process if the string is longer than 32 bytes
-                // but for now, only one slot will be used
-                let mut hasher = Keccak::v256();
-                let mut pointer = [0u8; 32];
-                hasher.update(&self.slot.to_big_endian().to_vec());
-                hasher.finalize(&mut pointer);
-                self.add_inst(
-                    OpCode::Push32,
-                    Some(ArgValue::U256(U256::from_big_endian(
-                        &value.clone().into_bytes(),
-                    ))),
-                );
-                self.add_inst(
-                    OpCode::Push32,
-                    Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                );
-                self.add_inst(OpCode::SStore, None);
-            }
-            Value::Bool(value) => {
-                let num = if *value { U256::one() } else { U256::zero() };
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
-                self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.slot)));
-                self.add_inst(OpCode::SStore, None);
-                self.slot += U256::one();
-            }
-        }
-        Ok(())
-    }
-
-    fn update_storage(&mut self, name: String, v: &Value) -> Result<(), Box<dyn Error>> {
-        if let Some(s) = self.storages.get_mut(&name) {
-            s.value = v.clone();
-            let slot = s.slot;
-            match v {
-                Value::Uint256(value) => {
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(*value)));
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
-                    self.add_inst(OpCode::SStore, None);
-                }
-                Value::Str(value) => {
-                    // store the length of the string
-                    let len = v.to_vec_u8().len();
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(len))));
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
-                    self.add_inst(OpCode::SStore, None);
-
-                    // store the string
-                    // TODO: implement the process if the string is longer than 32 bytes
-                    // but for now, only one slot will be used
-                    let mut hasher = Keccak::v256();
-                    let mut pointer = [0u8; 32];
-                    hasher.update(&self.slot.to_big_endian().to_vec());
-                    hasher.finalize(&mut pointer);
-                    self.add_inst(
-                        OpCode::Push32,
-                        Some(ArgValue::U256(U256::from_big_endian(
-                            &value.clone().into_bytes(),
-                        ))),
-                    );
-                    self.add_inst(
-                        OpCode::Push32,
-                        Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-                    );
-                    self.add_inst(OpCode::SStore, None);
-                }
-                Value::Bool(value) => {
-                    let num = if *value { U256::one() } else { U256::zero() };
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(num)));
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(slot)));
-                    self.add_inst(OpCode::SStore, None);
-                }
-            }
-            Ok(())
-        } else {
-            Err(format!("Variable not found: {name:?}").into())
-        }
-    }
-
-    fn bin_op(
-        &mut self,
-        op: OpCode,
-        lhs: &Expression,
-        rhs: &Expression,
-    ) -> Result<Value, Box<dyn Error>> {
-        let r_value = self.compile_expr(rhs)?;
-        let l_value = self.compile_expr(lhs)?;
-
-        self.add_inst(op, None);
-
-        match (l_value, r_value) {
-            (Value::Uint256(l), Value::Uint256(r)) => {
-                let result = match op {
-                    OpCode::Add => l + r,
-                    OpCode::Sub => l - r,
-                    OpCode::Mul => l * r,
-                    OpCode::Div => {
-                        if r == U256::zero() {
-                            return Err("Division by zero".into());
-                        }
-                        l / r
-                    }
-                    _ => return Err("Invalid opcode".into()),
-                };
-                Ok(Value::Uint256(result))
-            }
-            _ => Err("Invalid type".into()),
-        }
-    }
-
     fn compile_stmts(
         &mut self,
         stmts: &'a Statements<'a>,
-        top: bool,
+        selector: Option<[u8; 4]>,
     ) -> Result<Option<StkIdx>, Box<dyn Error>> {
         let mut last_result = None;
+
         for stmt in stmts {
             match stmt {
                 Statement::Expression(ex) => {
-                    last_result = Some(self.compile_expr(ex)?);
+                    last_result = Some(self.compile_expr(ex, selector)?);
                 }
                 Statement::VarDef { name, ex, .. } => {
-                    let result = self.compile_expr(ex)?;
+                    let result = self.compile_expr(ex, selector)?;
                     let var_name = name.fragment().to_string();
-                    // if top is true, we put the value into the storage
-                    if top {
-                        self.save_storage(var_name, &result)?;
+
+                    if let Some(selector) = selector {
+                        self.save_memory(var_name, &result, selector)?;
                     } else {
-                        self.save_memory(var_name, &result)?;
+                        self.save_storage(var_name, &result)?;
                     }
                 }
                 Statement::VarAssign { name, ex, .. } => {
-                    let result = self.compile_expr(ex)?;
+                    let result = self.compile_expr(ex, selector)?;
                     let var_name = name.fragment().to_string();
+                    if let Some(selector) = selector {
+                        self.update_memory(var_name.clone(), &result, selector)?;
+                    }
 
-                    if let Some(data) = self.memories.get_mut(&var_name) {
-                        data.value = result.clone();
-                        let value = data.value.clone();
-                        self.update_memory(var_name, &value)?;
-                    } else if let Some(data) = self.storages.get_mut(&var_name) {
+                    if let Some(data) = self.storages.get_mut(&var_name) {
                         data.value = result.clone();
                         let value = data.value.clone();
                         self.update_storage(var_name, &value)?;
@@ -643,6 +705,7 @@ impl<'a> Compiler<'a> {
                     let selector = create_func_selector(func, arg_types);
 
                     // get func selector from calldata
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
                     self.add_inst(OpCode::CalldataLoad, None);
                     self.add_inst(
                         OpCode::Push32,
@@ -670,47 +733,36 @@ impl<'a> Compiler<'a> {
                         })
                         .collect::<Vec<_>>();
 
-                    let fn_stmts = FnStatements {
-                        statements: stmts.clone(),
+                    let func = Function {
+                        statements: stmts,
                         args: fn_args,
+                        memories: HashMap::new(),
+                        memory_pointer: U256::from_str_radix("80", 16)?,
                     };
 
-                    self.funcs.insert(selector, fn_stmts);
+                    self.funcs.insert(selector, func);
                 }
                 Statement::Return(ex) => {
-                    // let res = self.compile_expr(ex)?;
-                    // self.add_inst(OpCode::Ret, (self.target_stack.len() - res.0 - 1) as u8);
+                    let res = self.compile_expr(ex, selector)?;
+                    if let Some(selector) = selector {
+                        let (pointer, length) =
+                            self.save_memory("return".to_string(), &res, selector)?;
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(length)));
+                        self.add_inst(OpCode::Push32, Some(ArgValue::U256(pointer)));
+                        self.add_inst(OpCode::Return, None);
+                    } else {
+                        return Err(format!("Variable not found.").into());
+                    }
                 }
             }
         }
-        for inst in &self.instructions {
-            println!("{:?}", inst);
-        }
-        // put funcs here
-
-        // func selector to pc
 
         Ok(None)
         // Ok(last_result)
     }
 
-    fn compile(&mut self, stmts: &'a Statements<'a>) -> Result<(), Box<dyn std::error::Error>> {
-        self.init_memory()?;
-        self.compile_stmts(stmts, true)?;
-        // compile the functions
-
-        for (selector, fn_stmts) in self.funcs.clone().iter() {
-            self.compile_func(*selector, fn_stmts)?;
-        }
-        Ok(())
-    }
-
-    fn compile_func<'b>(
-        &mut self,
-        selector: [u8; 4],
-        fn_stmts: &'b FnStatements<'b>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // allocate the current pc
+    fn compile_func(&mut self, selector: [u8; 4]) -> Result<(), Box<dyn std::error::Error>> {
+        // allocate the current pc to jump destination
         self.instructions.iter_mut().for_each(|inst| {
             if inst.op == OpCode::Push32 {
                 if let Some(ArgValue::FnSelector(fn_selector)) = inst.arg0 {
@@ -725,50 +777,40 @@ impl<'a> Compiler<'a> {
         // add jumpdest
         self.instructions
             .push(Instruction::new(OpCode::JumpDest, None));
-        // put args into memory
-        for arg in &fn_stmts.args {
-            // self.save_memory(arg.name.clone(), &Value::Uint256(U256::zero()))?;
-        }
 
-        // self.compile_stmts(stmts, false)?;
+        let func = self.find_func(selector)?.clone();
+        self.compile_stmts(func.statements, Some(selector))?;
         Ok(())
     }
 
-    // fn extract_value_from_calldata(
-    //     &mut self,
-    //     offset: usize,
-    //     arg: &Arg,
-    // ) -> Result<Value, Box<dyn Error>> {
-    //     self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(offset))));
-    //     self.add_inst(OpCode::CalldataLoad, None);
+    fn compile(&mut self, stmts: &'a Statements<'a>) -> Result<(), Box<dyn std::error::Error>> {
+        self.init_memory()?;
+        self.compile_stmts(stmts, None)?;
+        // compile the functions
 
-    //     let value = match arg.value_type {
-    //         TypeDecl::Uint256 => Value::Uint256(U256::from_big_endian(arg.)),
-    //         TypeDecl::Str => {}
-    //     };
+        for (selector, _) in self.funcs.clone().iter() {
+            self.compile_func(*selector)?;
+        }
+        for inst in &self.instructions {
+            println!("{:?}", inst);
+        }
+        Ok(())
+    }
 
-    //     self.memories.insert(
-    //         arg.name.clone(),
-    //         MemoryVariableTable {
-    //             value: v.clone(),
-    //             address: self.memory_pointer,
-    //         },
-    //     );
-
-    //     let value = v.to_vec_u8();
-    //     self.add_inst(
-    //         OpCode::Push32,
-    //         Some(ArgValue::U256(U256::from_big_endian(&value))),
-    //     );
-    //     self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
-    //     self.add_inst(OpCode::MStore, None);
-    //     self.memory_pointer += U256::from(32);
-    //     Ok(())
-    // }
+    fn find_func(
+        &mut self,
+        selector: [u8; 4],
+    ) -> Result<&mut Function<'a>, Box<dyn std::error::Error>> {
+        if let Some(func) = self.funcs.get_mut(&selector) {
+            Ok(func)
+        } else {
+            Err("Function not found".into())
+        }
+    }
 
     fn init_memory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.memory_pointer = U256::from_str_radix("80", 16)?;
-        self.add_inst(OpCode::Push32, Some(ArgValue::U256(self.memory_pointer)));
+        let memory_pointer = U256::from_str_radix("80", 16)?;
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(memory_pointer)));
         self.add_inst(
             OpCode::Push32,
             Some(ArgValue::U256(U256::from_str_radix("40", 16)?)),
@@ -835,7 +877,7 @@ fn compile(writer: &mut impl Write, source: String) -> Result<(), Box<dyn std::e
 }
 
 enum FnDef {
-    User(FnByteCode),
+    // User(FnByteCode),
     Native(NativeFn<'static>),
 }
 
