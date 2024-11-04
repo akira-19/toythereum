@@ -90,7 +90,7 @@ impl EVM {
     ) -> EVM {
         EVM {
             stack: Stack::new(),
-            memory: vec![0u8; 64],
+            memory: vec![0u8; 128],
             pc: 0,
             gas: U256::zero(),
             returns: Vec::new(),
@@ -106,6 +106,10 @@ impl EVM {
                 code,
             ),
         }
+    }
+
+    pub fn get_returns(&self) -> Vec<u8> {
+        self.returns.clone()
     }
 
     pub fn run(&mut self, storage: &mut StorageTrie) {
@@ -162,21 +166,21 @@ impl EVM {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a + b);
-        self.gas -= U256::from(3);
+        // self.gas -= U256::from(3);
     }
 
     fn op_mul(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a * b);
-        self.gas -= U256::from(5);
+        // self.gas -= U256::from(5);
     }
 
     fn op_sub(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a - b);
-        self.gas -= U256::from(3);
+        // self.gas -= U256::from(3);
     }
 
     fn op_div(&mut self) {
@@ -214,7 +218,7 @@ impl EVM {
 
     fn op_calldataload(&mut self) {
         let offset = self.stack.pop().as_u32() as usize;
-        let value = U256::from_big_endian(&self.code[offset..offset + 32]);
+        let value = U256::from_big_endian(&self.ee.input.calldata[offset..offset + 32]);
         self.stack.push(value);
     }
 
