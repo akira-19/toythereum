@@ -3,11 +3,11 @@ use std::{
     env,
     error::Error,
     fs::File,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{Read, Write},
 };
 
 use primitive_types::U256;
-use tiny_keccak::{keccakf, Hasher, Keccak};
+use tiny_keccak::{Hasher, Keccak};
 
 use crate::parser::*;
 
@@ -77,7 +77,6 @@ impl Instruction {
         Self { op, arg0 }
     }
 }
-
 fn serialize_size(sz: usize, writer: &mut impl Write) -> std::io::Result<()> {
     writer.write_all(&(sz as u32).to_le_bytes())
 }
@@ -161,25 +160,6 @@ impl<'a> Compiler<'a> {
             pc: 0,
         }
     }
-
-    // fn stack_top(&self) -> StkIdx {
-    //     StkIdx(self.target_stack.len() - 1)
-    // }
-
-    // fn add_literal(&mut self, value: Value) -> u8 {
-    //     let existing = self
-    //         .literals
-    //         .iter()
-    //         .enumerate()
-    //         .find(|(_, val)| **val == value);
-    //     if let Some((i, _)) = existing {
-    //         i as u8
-    //     } else {
-    //         let ret = self.literals.len();
-    //         self.literals.push(value);
-    //         ret as u8
-    //     }
-    // }
 
     /// Returns absolute position of inserted value
     fn add_inst(&mut self, op: OpCode, arg0: Option<ArgValue>) -> InstPtr {
@@ -537,44 +517,7 @@ impl<'a> Compiler<'a> {
             ExprEnum::Div(lhs, rhs) => self.bin_op(OpCode::Div, lhs, rhs, selector)?,
             ExprEnum::Gt(lhs, rhs) => self.bin_op(OpCode::Lt, rhs, lhs, selector)?,
             ExprEnum::Lt(lhs, rhs) => self.bin_op(OpCode::Lt, lhs, rhs, selector)?,
-            // ExprEnum::FnInvoke(name, args) => {
-            //     let stack_before_args = self.target_stack.len();
-            //     let name = self.add_literal(Value::Str(name.to_string()));
-            //     let args = args
-            //         .iter()
-            //         .map(|arg| self.compile_expr(arg))
-            //         .collect::<Result<Vec<_>, _>>()?;
 
-            //     let stack_before_call = self.target_stack.len();
-            //     self.add_load_literal_inst(name);
-            //     for arg in &args {
-            //         self.add_copy_inst(*arg);
-            //     }
-
-            //     self.add_inst(OpCode::Call, args.len() as u8);
-            //     self.target_stack
-            //         .resize(stack_before_call + 1, Target::Temp);
-            //     self.coerce_stack(StkIdx(stack_before_args));
-            //     self.stack_top()
-            // }
-            // ExprEnum::If(cond, true_branch, false_branch) => {
-            //     use OpCode::*;
-            //     let cond = self.compile_expr(cond)?;
-            //     self.add_copy_inst(cond);
-            //     let jf_inst = self.add_jf_inst();
-            //     let stack_size_before = self.target_stack.len();
-            //     self.compile_stmts_or_zero(true_branch, false)?;
-            //     self.coerce_stack(StkIdx(stack_size_before + 1));
-            //     let jmp_inst = self.add_inst(Jmp, 0);
-            //     self.fixup_jmp(jf_inst);
-            //     self.target_stack.resize(stack_size_before, Target::Temp);
-            //     if let Some(false_branch) = false_branch.as_ref() {
-            //         self.compile_stmts_or_zero(&false_branch, false)?;
-            //     }
-            //     self.coerce_stack(StkIdx(stack_size_before + 1));
-            //     self.fixup_jmp(jmp_inst);
-            //     self.stack_top()
-            // }
             _ => todo!(),
         })
     }
@@ -584,12 +527,10 @@ impl<'a> Compiler<'a> {
         stmts: &'a Statements<'a>,
         selector: Option<[u8; 4]>,
     ) -> Result<Option<StkIdx>, Box<dyn Error>> {
-        let mut last_result = None;
-
         for stmt in stmts {
             match stmt {
                 Statement::Expression(ex) => {
-                    last_result = Some(self.compile_expr(ex, selector)?);
+                    Some(self.compile_expr(ex, selector)?);
                 }
                 Statement::VarDef { name, ex, .. } => {
                     let result = self.compile_expr(ex, selector)?;
@@ -794,20 +735,11 @@ fn write_program(source: &str, writer: &mut impl Write) -> Result<(), Box<dyn st
         }
     });
 
-    // compiler.disasm(&mut std::io::stdout())?;
-
-    // compiler.write_funcs(writer)?;
-
     Ok(())
 }
 
 fn compile(writer: &mut impl Write, source: String) -> Result<(), Box<dyn std::error::Error>> {
     write_program(&source, writer)
-}
-
-enum FnDef {
-    // User(FnByteCode),
-    Native(NativeFn<'static>),
 }
 
 type Functions<'src> = HashMap<String, FnDecl<'src>>;
@@ -841,9 +773,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let hex_string: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
     println!("{}", hex_string);
-    // let bytecode = read_program(&mut std::io::Cursor::new(&mut buf))?;
-    // if let Err(e) = bytecode.interpret("main", &[]) {
-    //     eprintln!("Runtime error: {e:?}");
-    // }
+
     Ok(())
 }
