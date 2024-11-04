@@ -1,5 +1,8 @@
-function add(uint256 a, str b) returns (uint256) {
-    return a + b;
-}
+contract TestContract {
+    uint256 a = 1;
 
-add(1,2);
+    function test() returns (uint256) {
+        uint256 b = 2 + a;
+        return b;
+    }
+}
