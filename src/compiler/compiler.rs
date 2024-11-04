@@ -281,6 +281,7 @@ impl<'a> Compiler<'a> {
 
     fn save_storage(&mut self, name: String, v: &Valuable) -> Result<(), Box<dyn Error>> {
         let value_type;
+        let slot = self.slot.clone();
         match v {
             Valuable::Value(value) => {
                 match value {
@@ -371,13 +372,8 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        self.storages.insert(
-            name,
-            StorageVariableTable {
-                value_type,
-                slot: self.slot,
-            },
-        );
+        self.storages
+            .insert(name, StorageVariableTable { value_type, slot });
 
         Ok(())
     }
