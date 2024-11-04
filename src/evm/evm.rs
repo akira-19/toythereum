@@ -1,24 +1,25 @@
 use crate::state::*;
 use primitive_types::U256;
 
-struct EVM {
+pub struct EVM {
     stack: Stack,
     memory: Vec<u8>,
     pc: usize,
     gas: U256,
     returns: Vec<u8>,
     code: Vec<u8>,
+    ee: ExecutionEnvironment,
 }
 
-struct Input {
+pub struct Input {
     contract_address: Address,
     sender: Address,
     gas_price: U256,
-    data: Vec<u8>,
+    calldata: Vec<u8>,
     value: U256,
 }
 
-struct ExecutionEnvironment {
+pub struct ExecutionEnvironment {
     input: Input,
     gas: U256,
     state: WorldState,
@@ -26,11 +27,11 @@ struct ExecutionEnvironment {
 }
 
 impl ExecutionEnvironment {
-    fn new(
+    pub fn new(
         contract_address: Address,
         sender: Address,
         gas_price: U256,
-        data: Vec<u8>,
+        calldata: Vec<u8>,
         value: U256,
         gas: U256,
         state: WorldState,
@@ -41,7 +42,7 @@ impl ExecutionEnvironment {
                 contract_address: contract_address,
                 sender: sender,
                 gas_price: gas_price,
-                data: data,
+                calldata: calldata,
                 value: value,
             },
             gas: gas,
@@ -77,28 +78,70 @@ impl Stack {
 }
 
 impl EVM {
-    fn new() -> EVM {
+    pub fn new(
+        contract_address: Address,
+        sender: Address,
+        gas_price: U256,
+        calldata: Vec<u8>,
+        value: U256,
+        gas: U256,
+        state: WorldState,
+        code: CodeStorage,
+    ) -> EVM {
         EVM {
             stack: Stack::new(),
-            memory: Vec::new(),
+            memory: vec![0u8; 64],
             pc: 0,
             gas: U256::zero(),
             returns: Vec::new(),
             code: Vec::new(),
+            ee: ExecutionEnvironment::new(
+                contract_address,
+                sender,
+                gas_price,
+                calldata,
+                value,
+                gas,
+                state,
+                code,
+            ),
         }
     }
 
-    fn run(&mut self, ee: ExecutionEnvironment) {
-        let contract_address = ee.input.contract_address;
-        self.code = ee.code.get_code(&contract_address).unwrap().to_vec();
+    pub fn run(&mut self, storage: &mut StorageTrie) {
+        let contract_address = self.ee.input.contract_address.clone();
+        self.code = self.ee.code.get_code(&contract_address).unwrap().to_vec();
         loop {
+            println!("stack: {:?}", self.stack.data);
             let opcode = self.code[self.pc];
-            println!("opcode: {:?}", opcode);
+            println!("opcode: {:02X}", opcode);
             match opcode {
                 0x00 => self.op_stop(),
                 0x01 => self.op_add(),
+                0x02 => self.op_mul(),
+
+                0x03 => self.op_sub(),
+                0x04 => self.op_div(),
+
+                0x10 => self.op_lt(),
+
+                0x14 => self.op_eq(),
+
+                0x1C => self.op_shr(),
+
+                0x35 => self.op_calldataload(),
+
+                0x51 => self.op_mload(),
                 0x52 => self.op_mstore(),
+                0x54 => self.op_sload(storage),
+                0x55 => self.op_sstore(storage),
+
+                0x56 => self.op_jump(),
+                0x57 => self.op_jumpi(),
+                0x5b => self.op_jumpdest(),
+
                 0x60 => self.op_push(1),
+                0x7F => self.op_push(32),
                 0xF3 => self.op_return(),
                 _ => panic!("Invalid opcode"),
             }
@@ -119,6 +162,66 @@ impl EVM {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a + b);
+        self.gas -= U256::from(3);
+    }
+
+    fn op_mul(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        self.stack.push(a * b);
+        self.gas -= U256::from(5);
+    }
+
+    fn op_sub(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        self.stack.push(a - b);
+        self.gas -= U256::from(3);
+    }
+
+    fn op_div(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        self.stack.push(a / b);
+    }
+
+    fn op_lt(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        if a < b {
+            self.stack.push(U256::one());
+        } else {
+            self.stack.push(U256::zero());
+        }
+    }
+
+    fn op_eq(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        if a == b {
+            self.stack.push(U256::one());
+        } else {
+            self.stack.push(U256::zero());
+        }
+    }
+
+    fn op_shr(&mut self) {
+        let a = self.stack.pop();
+        let b = self.stack.pop();
+        println!("a: {}, b: {}", a, b);
+        self.stack.push(a >> b);
+    }
+
+    fn op_calldataload(&mut self) {
+        let offset = self.stack.pop().as_u32() as usize;
+        let value = U256::from_big_endian(&self.code[offset..offset + 32]);
+        self.stack.push(value);
+    }
+
+    fn op_mload(&mut self) {
+        let offset = self.stack.pop().as_u32() as usize;
+        let value = U256::from_big_endian(&self.memory[offset..offset + 32]);
+        self.stack.push(value);
     }
 
     fn op_mstore(&mut self) {
@@ -128,6 +231,36 @@ impl EVM {
         for (i, byte) in value_bytes.iter().enumerate() {
             self.memory.insert(offset + i, *byte);
         }
+    }
+
+    fn op_sload(&mut self, storage: &StorageTrie) {
+        let key = self.stack.pop();
+        let value = storage.get_value(&self.ee.input.contract_address, key);
+        self.stack.push(value);
+    }
+
+    fn op_sstore(&mut self, storage: &mut StorageTrie) {
+        let key = self.stack.pop();
+        let value = self.stack.pop();
+        let address = self.ee.input.contract_address.clone();
+        storage.upsert(address, key, value);
+    }
+
+    fn op_jump(&mut self) {
+        let position = self.stack.pop().as_usize();
+        self.pc = position;
+    }
+
+    fn op_jumpi(&mut self) {
+        let position = self.stack.pop().as_usize();
+        let condition = self.stack.pop();
+        if condition != U256::zero() {
+            self.pc = position;
+        }
+    }
+
+    fn op_jumpdest(&mut self) {
+        // do nothing
     }
 
     fn op_push0(&mut self) {
@@ -154,11 +287,14 @@ impl EVM {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use crate::state;
+
     use super::*;
 
     #[test]
     fn test_addition() {
-        let mut evm = EVM::new();
         let code = vec![
             0x60, 0x01, // PUSH1
             0x60, 0x02, // PUSH1
@@ -190,7 +326,7 @@ mod tests {
         let contract_address = Address::new("0x1234567890123456789012345678901234567890");
         let mut code_storage = CodeStorage::new();
         code_storage.insert_code(contract_address.clone(), code.clone());
-        let ee = ExecutionEnvironment::new(
+        let mut evm = EVM::new(
             contract_address,
             Address::new("0x1234567890123456789012345678901234567890"),
             U256::zero(),
@@ -201,7 +337,9 @@ mod tests {
             code_storage,
         );
 
-        evm.run(ee);
+        let mut storage = state::StorageTrie(HashMap::new());
+
+        evm.run(&mut storage);
 
         assert_eq!(evm.returns[evm.returns.len() - 1], 3u8);
     }

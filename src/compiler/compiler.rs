@@ -2,12 +2,10 @@ use std::{
     collections::HashMap,
     env,
     error::Error,
-    fmt::Display,
     fs::File,
     io::{BufReader, BufWriter, Read, Write},
 };
 
-use nom::Err;
 use primitive_types::U256;
 use tiny_keccak::{keccakf, Hasher, Keccak};
 
@@ -45,19 +43,19 @@ pub enum OpCode {
 
 macro_rules! impl_op_from {
     ($($op:ident),*) => {
-      impl From<u8> for OpCode {
-        #[allow(non_upper_case_globals)]
-        fn from(o: u8) -> Self {
-          $(const $op: u8 = OpCode::$op as u8;)*
+        impl From<u8> for OpCode {
+            #[allow(non_upper_case_globals)]
+            fn from(o: u8) -> Self {
+                $(const $op: u8 = OpCode::$op as u8;)*
 
-          match o {
-            $($op => Self::$op,)*
-            _ => panic!("Opcode \"{:02X}\" unrecognized!", o),
-          }
+                match o {
+                    $($op => Self::$op,)*
+                    _ => panic!("Opcode \"{:02X}\" unrecognized!", o),
+                }
+            }
         }
-      }
     }
-  }
+}
 
 impl_op_from!(Stop, Add, MStore, Push1, Return);
 
@@ -186,7 +184,7 @@ impl<'a> Compiler<'a> {
     /// Returns absolute position of inserted value
     fn add_inst(&mut self, op: OpCode, arg0: Option<ArgValue>) -> InstPtr {
         let inst = self.instructions.len();
-        self.instructions.push(Instruction { op, arg0 });
+        self.instructions.push(Instruction::new(op, arg0));
         self.pc += 1;
         if arg0.is_some() {
             self.pc += 32;
@@ -251,35 +249,6 @@ impl<'a> Compiler<'a> {
     fn load_storage(&mut self, v: &StorageVariableTable) -> Result<(), Box<dyn Error>> {
         self.add_inst(OpCode::Push32, Some(ArgValue::U256(v.slot)));
         match &v.value_type {
-            // Valuable::Value(value) => {
-            //     match value {
-            //         Value::Uint256(_) => {
-            //             self.add_inst(OpCode::SLoad, None);
-            //         }
-            //         Value::Str(_) => {
-            //             // retrieve the length from the slot
-            //             self.add_inst(OpCode::SLoad, None);
-
-            //             // get pointer to the slot of the string
-            //             let mut hasher = Keccak::v256();
-            //             let mut pointer = [0u8; 32];
-            //             hasher.update(&v.slot.to_big_endian().to_vec());
-            //             hasher.finalize(&mut pointer);
-            //             self.add_inst(
-            //                 OpCode::Push32,
-            //                 Some(ArgValue::U256(U256::from_big_endian(&pointer))),
-            //             );
-
-            //             // load the string from the slot
-            //             self.add_inst(OpCode::SLoad, None);
-
-            //             // TODO: implement the process if the string is longer than 32 bytes
-            //         }
-            //         Value::Bool(_) => {
-            //             self.add_inst(OpCode::SLoad, None);
-            //         }
-            //     }
-            // }
             TypeDecl::Uint256 => {
                 self.add_inst(OpCode::SLoad, None);
             }
@@ -656,13 +625,13 @@ impl<'a> Compiler<'a> {
                     let arg_types = args.iter().map(|arg| arg.1.type_name()).collect::<Vec<_>>();
                     let selector = create_func_selector(func, arg_types);
 
-                    // get func selector from calldata
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
-                    self.add_inst(OpCode::CalldataLoad, None);
                     self.add_inst(
                         OpCode::Push32,
                         Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
                     );
+                    // get func selector from calldata
+                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
+                    self.add_inst(OpCode::CalldataLoad, None);
                     self.add_inst(OpCode::SHR, None);
 
                     // add this function's selector to the stack and compare
@@ -817,6 +786,18 @@ fn write_program(source: &str, writer: &mut impl Write) -> Result<(), Box<dyn st
 
     compiler.compile(&stmts)?;
 
+    compiler.instructions.iter().for_each(|inst| {
+        writer.write_all(&[inst.op as u8]).unwrap();
+        if let Some(arg) = inst.arg0 {
+            match arg {
+                ArgValue::U256(v) => {
+                    writer.write_all(&v.to_big_endian().to_vec()).unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+
     // compiler.disasm(&mut std::io::stdout())?;
 
     // compiler.write_funcs(writer)?;
@@ -862,6 +843,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Compile Error: {e}");
         return Ok(());
     }
+    let hex_string: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
+    println!("{}", hex_string);
     // let bytecode = read_program(&mut std::io::Cursor::new(&mut buf))?;
     // if let Err(e) = bytecode.interpret("main", &[]) {
     //     eprintln!("Runtime error: {e:?}");

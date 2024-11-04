@@ -10,3 +10,12 @@ primitive-types = "0.13.1"
 regex = "1.10.3"
 nom = "7.1.1"
 nom_locate = "4.1.0"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+[[bin]]
+name = "compiler"
+path = "src/compiler/main.rs"
+
+[[bin]]
+name = "evm"
+path = "src/evm/main.rs"

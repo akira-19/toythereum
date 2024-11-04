@@ -1,6 +1,9 @@
 contract TestContract{
-  function test(uint256 a, uint256 b) returns(bool) {
-    return a < b;
+  uint256 a = 1;
+
+  function test() returns(uint256) {
+    uint256 b = 2 + a;
+    return b;
   }
 }
 

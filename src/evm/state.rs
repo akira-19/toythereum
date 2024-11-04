@@ -13,21 +13,21 @@ impl WorldState {
         }
     }
 
-    fn get_account(&self, address: &Address) -> Option<&AccountState> {
+    pub fn get_account(&self, address: &Address) -> Option<&AccountState> {
         self.accounts.get(address)
     }
 
-    fn insert_account(&mut self, address: Address, account: AccountState) {
+    pub fn insert_account(&mut self, address: Address, account: AccountState) {
         self.accounts.insert(address, account);
     }
 }
 
 #[derive(Hash, Eq, PartialEq, Debug)]
-struct AccountState {
+pub struct AccountState {
     nonce: U256,
     balance: U256,
     storage_root: U256, // merkle root of the storage trie
-    code_hash: Vec<u8>,
+    pub code_hash: Vec<u8>,
 }
 
 pub struct CodeStorage {
@@ -65,7 +65,7 @@ impl Address {
 }
 
 impl AccountState {
-    fn new() -> AccountState {
+    pub fn new() -> AccountState {
         AccountState {
             nonce: U256::zero(),
             balance: U256::zero(),
@@ -75,4 +75,32 @@ impl AccountState {
     }
 }
 
-type StorageTrie = HashMap<U256, U256>;
+pub type StorageTrieNode = HashMap<U256, U256>;
+
+#[derive(Debug, Clone)]
+
+pub struct StorageTrie(pub HashMap<Address, StorageTrieNode>);
+
+impl StorageTrie {
+    pub fn new() -> StorageTrie {
+        StorageTrie(HashMap::new())
+    }
+
+    pub fn get(&self, address: &Address) -> &StorageTrieNode {
+        self.0.get(address).unwrap()
+    }
+
+    pub fn get_value(&self, address: &Address, key: U256) -> U256 {
+        self.0.get(address).unwrap().get(&key).cloned().unwrap()
+    }
+
+    pub fn upsert(&mut self, address: Address, key: U256, value: U256) {
+        if let Some(node) = self.0.get_mut(&address) {
+            node.insert(key, value);
+        } else {
+            let mut node = HashMap::new();
+            node.insert(key, value);
+            self.0.insert(address, node);
+        }
+    }
+}
