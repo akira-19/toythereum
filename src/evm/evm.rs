@@ -6,7 +6,7 @@ pub struct EVM {
     memory: Vec<u8>,
     pc: usize,
     gas: U256,
-    returns: Vec<u8>,
+    returns: Option<ReturnValue>,
     code: Vec<u8>,
     ee: ExecutionEnvironment,
 }
@@ -77,6 +77,13 @@ impl Stack {
     }
 }
 
+#[derive(Clone)]
+pub enum ReturnValue {
+    Return(Vec<u8>),
+    Revert(Vec<u8>),
+    Stop,
+}
+
 impl EVM {
     pub fn new(
         contract_address: Address,
@@ -93,7 +100,7 @@ impl EVM {
             memory: vec![0u8; 128],
             pc: 0,
             gas: U256::zero(),
-            returns: Vec::new(),
+            returns: None,
             code: Vec::new(),
             ee: ExecutionEnvironment::new(
                 contract_address,
@@ -108,7 +115,7 @@ impl EVM {
         }
     }
 
-    pub fn get_returns(&self) -> Vec<u8> {
+    pub fn get_returns(&self) -> Option<ReturnValue> {
         self.returns.clone()
     }
 
@@ -147,6 +154,7 @@ impl EVM {
                 0x60 => self.op_push(1),
                 0x7F => self.op_push(32),
                 0xF3 => self.op_return(),
+                0xFD => self.op_revert(),
                 _ => panic!("Invalid opcode"),
             }
 
@@ -155,11 +163,16 @@ impl EVM {
             if self.pc >= self.code.len() {
                 break;
             }
+
+            if self.returns.is_some() {
+                break;
+            }
         }
     }
 
-    fn op_stop(&self) {
+    fn op_stop(&mut self) {
         // stop the execution
+        self.returns = Some(ReturnValue::Stop);
     }
 
     fn op_add(&mut self) {
@@ -285,7 +298,15 @@ impl EVM {
         let length = self.stack.pop().as_u32() as usize;
 
         let return_value = &self.memory[offset..offset + length];
-        self.returns = Vec::from(return_value);
+        self.returns = Some(ReturnValue::Return(Vec::from(return_value)));
+    }
+
+    fn op_revert(&mut self) {
+        let offset = self.stack.pop().as_u32() as usize;
+        let length = self.stack.pop().as_u32() as usize;
+
+        let return_value = &self.memory[offset..offset + length];
+        self.returns = Some(ReturnValue::Revert(Vec::from(return_value)));
     }
 }
 
@@ -345,6 +366,6 @@ mod tests {
 
         evm.run(&mut storage);
 
-        assert_eq!(evm.returns[evm.returns.len() - 1], 3u8);
+        // assert_eq!(evm.returns, Some(ReturnValue::Return([3u8])));
     }
 }

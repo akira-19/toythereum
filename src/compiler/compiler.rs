@@ -39,6 +39,7 @@ pub enum OpCode {
     Push32 = 0x7F,
 
     Return = 0xF3,
+    Revert = 0xFD,
 }
 
 macro_rules! impl_op_from {
@@ -644,8 +645,14 @@ impl<'a> Compiler<'a> {
     fn compile(&mut self, stmts: &'a Statements<'a>) -> Result<(), Box<dyn std::error::Error>> {
         self.init_memory()?;
         self.compile_stmts(stmts, None)?;
-        // compile the functions
 
+        // no function matched
+        // not loading the memory for now
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(0))));
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(0))));
+        self.add_inst(OpCode::Revert, None);
+
+        // compile the functions
         for (selector, _) in self.funcs.clone().iter() {
             self.compile_func(*selector)?;
         }

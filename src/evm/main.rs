@@ -36,7 +36,21 @@ fn main() {
 
     evm.run(&mut storage);
 
-    println!("{:?}", evm.get_returns());
+    if let Some(ret) = evm.get_returns() {
+        match ret {
+            evm::ReturnValue::Revert(v) => {
+                println!("Revert: {:?}", v);
+            }
+            evm::ReturnValue::Return(v) => {
+                println!("Return: {:?}", v);
+            }
+            evm::ReturnValue::Stop => {
+                println!("Stop");
+            }
+        }
+    } else {
+        println!("No return value");
+    }
 }
 
 fn hex_to_vec(hex: &str) -> Result<Vec<u8>, String> {
