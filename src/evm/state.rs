@@ -86,12 +86,21 @@ impl StorageTrie {
         StorageTrie(HashMap::new())
     }
 
-    pub fn get(&self, address: &Address) -> &StorageTrieNode {
-        self.0.get(address).unwrap()
+    pub fn get(&self, address: &Address) -> StorageTrieNode {
+        if let Some(node) = self.0.get(address) {
+            node.clone()
+        } else {
+            HashMap::new()
+        }
     }
 
     pub fn get_value(&self, address: &Address, key: U256) -> U256 {
         self.0.get(address).unwrap().get(&key).cloned().unwrap()
+    }
+
+    pub fn rollback(&mut self, address: &Address, node: StorageTrieNode) {
+        let current_node = self.0.get_mut(address).unwrap();
+        *current_node = node;
     }
 
     pub fn upsert(&mut self, address: Address, key: U256, value: U256) {

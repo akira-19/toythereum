@@ -420,11 +420,11 @@ impl<'a> Compiler<'a> {
             (Valuable::Value(l), Valuable::Value(r)) => {
                 let l = match l {
                     Value::Uint256(v) => v,
-                    _ => return Err("Invalid type".into()),
+                    _ => return Err("Invalid type l".into()),
                 };
                 let r = match r {
                     Value::Uint256(v) => v,
-                    _ => return Err("Invalid type".into()),
+                    _ => return Err("Invalid type r".into()),
                 };
                 let result = match op {
                     OpCode::Add => Value::Uint256(l + r),
@@ -447,8 +447,8 @@ impl<'a> Compiler<'a> {
                 };
                 Ok(Valuable::Value(result))
             }
-            (Valuable::Value(Value::Uint256(_)), Valuable::Undetermined(TypeDecl::Uint256))
-            | (Valuable::Undetermined(TypeDecl::Uint256), Valuable::Value(Value::Uint256(_))) => {
+            (_, Valuable::Undetermined(TypeDecl::Uint256))
+            | (Valuable::Undetermined(TypeDecl::Uint256), _) => {
                 self.add_inst(op, None);
                 Ok(Valuable::Undetermined(TypeDecl::Uint256))
             }

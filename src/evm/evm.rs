@@ -5,7 +5,7 @@ pub struct EVM {
     stack: Stack,
     memory: Vec<u8>,
     pc: usize,
-    gas: U256,
+    pub gas: U256,
     returns: Option<ReturnValue>,
     code: Vec<u8>,
     ee: ExecutionEnvironment,
@@ -99,7 +99,7 @@ impl EVM {
             stack: Stack::new(),
             memory: vec![0u8; 128],
             pc: 0,
-            gas: U256::zero(),
+            gas,
             returns: None,
             code: Vec::new(),
             ee: ExecutionEnvironment::new(
@@ -119,8 +119,19 @@ impl EVM {
         self.returns.clone()
     }
 
-    pub fn run(&mut self, storage: &mut StorageTrie) {
+    fn consume_gas(&mut self, gas: U256) {
+        let (res, underflow) = self.gas.overflowing_sub(gas);
+        if underflow {
+            self.returns = Some(ReturnValue::Revert(Vec::new()));
+        } else {
+            self.gas = res;
+        }
+    }
+
+    pub fn run(&mut self, mut storage: &mut StorageTrie) {
         let contract_address = self.ee.input.contract_address.clone();
+        let initial_node = storage.get(&contract_address).clone();
+
         self.code = self.ee.code.get_code(&contract_address).unwrap().to_vec();
         loop {
             println!("stack: {:?}", self.stack.data);
@@ -164,8 +175,14 @@ impl EVM {
                 break;
             }
 
-            if self.returns.is_some() {
-                break;
+            match self.returns {
+                Some(ReturnValue::Return(_)) => break,
+                Some(ReturnValue::Revert(_)) => {
+                    storage.rollback(&contract_address, initial_node);
+                    break;
+                }
+                Some(ReturnValue::Stop) => break,
+                None => continue,
             }
         }
     }
@@ -179,27 +196,28 @@ impl EVM {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a + b);
-        // self.gas -= U256::from(3);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_mul(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a * b);
-        // self.gas -= U256::from(5);
+        self.consume_gas(U256::from(5));
     }
 
     fn op_sub(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a - b);
-        // self.gas -= U256::from(3);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_div(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
         self.stack.push(a / b);
+        self.consume_gas(U256::from(5));
     }
 
     fn op_lt(&mut self) {
@@ -210,6 +228,7 @@ impl EVM {
         } else {
             self.stack.push(U256::zero());
         }
+        self.consume_gas(U256::from(3));
     }
 
     fn op_eq(&mut self) {
@@ -220,6 +239,7 @@ impl EVM {
         } else {
             self.stack.push(U256::zero());
         }
+        self.consume_gas(U256::from(3));
     }
 
     fn op_shr(&mut self) {
@@ -227,18 +247,21 @@ impl EVM {
         let b = self.stack.pop();
         println!("a: {}, b: {}", a, b);
         self.stack.push(a >> b);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_calldataload(&mut self) {
         let offset = self.stack.pop().as_u32() as usize;
         let value = U256::from_big_endian(&self.ee.input.calldata[offset..offset + 32]);
         self.stack.push(value);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_mload(&mut self) {
         let offset = self.stack.pop().as_u32() as usize;
         let value = U256::from_big_endian(&self.memory[offset..offset + 32]);
         self.stack.push(value);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_mstore(&mut self) {
@@ -248,12 +271,14 @@ impl EVM {
         for (i, byte) in value_bytes.iter().enumerate() {
             self.memory.insert(offset + i, *byte);
         }
+        self.consume_gas(U256::from(3));
     }
 
     fn op_sload(&mut self, storage: &StorageTrie) {
         let key = self.stack.pop();
         let value = storage.get_value(&self.ee.input.contract_address, key);
         self.stack.push(value);
+        self.consume_gas(U256::from(100));
     }
 
     fn op_sstore(&mut self, storage: &mut StorageTrie) {
@@ -261,11 +286,13 @@ impl EVM {
         let value = self.stack.pop();
         let address = self.ee.input.contract_address.clone();
         storage.upsert(address, key, value);
+        self.consume_gas(U256::from(100));
     }
 
     fn op_jump(&mut self) {
         let position = self.stack.pop().as_usize();
         self.pc = position;
+        self.consume_gas(U256::from(8));
     }
 
     fn op_jumpi(&mut self) {
@@ -274,23 +301,25 @@ impl EVM {
         if condition != U256::zero() {
             self.pc = position;
         }
+        self.consume_gas(U256::from(10));
     }
 
     fn op_jumpdest(&mut self) {
-        // do nothing
+        self.consume_gas(U256::from(1));
     }
 
     fn op_push0(&mut self) {
         self.stack.push(U256::from(0));
         self.pc += 1;
+        self.consume_gas(U256::from(2));
     }
 
     fn op_push(&mut self, length: usize) {
         let value = U256::from_big_endian(&self.code[self.pc + 1..self.pc + 1 + length]);
 
         self.pc += length;
-        // self.gas -= U256::from(3);
         self.stack.push(value);
+        self.consume_gas(U256::from(3));
     }
 
     fn op_return(&mut self) {
