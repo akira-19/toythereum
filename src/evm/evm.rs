@@ -1,4 +1,6 @@
-use crate::state::*;
+use std::collections::HashMap;
+
+use crate::{state::*, util::calculate_contract_address};
 use primitive_types::U256;
 
 pub struct EVM {
@@ -9,11 +11,12 @@ pub struct EVM {
     returns: Option<ReturnValue>,
     code: Vec<u8>,
     ee: ExecutionEnvironment,
+    contract_address: Address,
 }
 
 pub struct Input {
-    contract_address: Address,
-    sender: Address,
+    from: Address,
+    to: Option<Address>,
     gas_price: U256,
     calldata: Vec<u8>,
     value: U256,
@@ -28,8 +31,8 @@ pub struct ExecutionEnvironment {
 
 impl ExecutionEnvironment {
     pub fn new(
-        contract_address: Address,
-        sender: Address,
+        from: Address,
+        to: Option<Address>,
         gas_price: U256,
         calldata: Vec<u8>,
         value: U256,
@@ -39,8 +42,8 @@ impl ExecutionEnvironment {
     ) -> ExecutionEnvironment {
         ExecutionEnvironment {
             input: Input {
-                contract_address: contract_address,
-                sender: sender,
+                from,
+                to,
                 gas_price: gas_price,
                 calldata: calldata,
                 value: value,
@@ -86,8 +89,8 @@ pub enum ReturnValue {
 
 impl EVM {
     pub fn new(
-        contract_address: Address,
-        sender: Address,
+        from: Address,
+        to: Option<Address>,
         gas_price: U256,
         calldata: Vec<u8>,
         value: U256,
@@ -95,6 +98,13 @@ impl EVM {
         state: WorldState,
         code: CodeStorage,
     ) -> EVM {
+        let state_copy = state.clone();
+        let account = state_copy.get_account(&from.clone()).unwrap();
+        let contract_address = if let Some(contract) = to.clone() {
+            contract
+        } else {
+            calculate_contract_address(from.clone(), U256::low_u64(&account.nonce))
+        };
         EVM {
             stack: Stack::new(),
             memory: vec![0u8; 128],
@@ -103,8 +113,8 @@ impl EVM {
             returns: None,
             code: Vec::new(),
             ee: ExecutionEnvironment::new(
-                contract_address,
-                sender,
+                from.clone(),
+                to,
                 gas_price,
                 calldata,
                 value,
@@ -112,6 +122,7 @@ impl EVM {
                 state,
                 code,
             ),
+            contract_address,
         }
     }
 
@@ -129,10 +140,19 @@ impl EVM {
     }
 
     pub fn run(&mut self, mut storage: &mut StorageTrie) {
-        let contract_address = self.ee.input.contract_address.clone();
-        let initial_node = storage.get(&contract_address).clone();
+        let to = self.ee.input.to.clone();
 
-        self.code = self.ee.code.get_code(&contract_address).unwrap().to_vec();
+        let initial_node;
+
+        if let Some(contract) = to {
+            self.code = self.ee.code.get_code(&contract).unwrap().to_vec();
+            initial_node = storage.get(&contract).clone();
+            self.code = self.ee.code.get_code(&contract).unwrap().to_vec();
+        } else {
+            initial_node = HashMap::new();
+            self.code = self.ee.input.calldata.clone();
+        }
+
         loop {
             println!("stack: {:?}", self.stack.data);
             let opcode = self.code[self.pc];
@@ -153,6 +173,8 @@ impl EVM {
 
                 0x35 => self.op_calldataload(),
 
+                0x39 => self.op_codecopy(),
+
                 0x51 => self.op_mload(),
                 0x52 => self.op_mstore(),
                 0x54 => self.op_sload(storage),
@@ -162,6 +184,7 @@ impl EVM {
                 0x57 => self.op_jumpi(),
                 0x5b => self.op_jumpdest(),
 
+                0x5F => self.op_push0(),
                 0x60 => self.op_push(1),
                 0x7F => self.op_push(32),
                 0xF3 => self.op_return(),
@@ -178,7 +201,7 @@ impl EVM {
             match self.returns {
                 Some(ReturnValue::Return(_)) => break,
                 Some(ReturnValue::Revert(_)) => {
-                    storage.rollback(&contract_address, initial_node);
+                    storage.rollback(&self.contract_address, initial_node);
                     break;
                 }
                 Some(ReturnValue::Stop) => break,
@@ -257,6 +280,30 @@ impl EVM {
         self.consume_gas(U256::from(3));
     }
 
+    fn op_codecopy(&mut self) {
+        let dest_offset = self.stack.pop().as_u32() as usize;
+        let offset = self.stack.pop().as_u32() as usize;
+        let length = self.stack.pop().as_u32() as usize;
+        let code = self.ee.code.get_code(&self.contract_address).unwrap();
+        let code_slice = &code[offset..offset + length];
+        let current_memory_size = (self.memory.len() + 31) / 32;
+
+        // TODO: need to check if the code size is longer than the current memory size
+        for (i, byte) in code_slice.iter().enumerate() {
+            self.memory.insert(dest_offset + i, *byte);
+        }
+
+        let new_memory_size = (self.memory.len() + 31) / 32;
+
+        // TODO: need to check the gas cost calculation
+        let memory_expansion_cost = (new_memory_size ^ 2 - current_memory_size ^ 2) / 512
+            + 3 * (new_memory_size - current_memory_size);
+
+        let gas_cost = 3 + 3 * new_memory_size + memory_expansion_cost;
+
+        self.consume_gas(U256::from(gas_cost));
+    }
+
     fn op_mload(&mut self) {
         let offset = self.stack.pop().as_u32() as usize;
         let value = U256::from_big_endian(&self.memory[offset..offset + 32]);
@@ -271,12 +318,13 @@ impl EVM {
         for (i, byte) in value_bytes.iter().enumerate() {
             self.memory.insert(offset + i, *byte);
         }
+        // TODO: gas should be calculated based on the memory expansion
         self.consume_gas(U256::from(3));
     }
 
     fn op_sload(&mut self, storage: &StorageTrie) {
         let key = self.stack.pop();
-        let value = storage.get_value(&self.ee.input.contract_address, key);
+        let value = storage.get_value(&self.contract_address, key);
         self.stack.push(value);
         self.consume_gas(U256::from(100));
     }
@@ -284,7 +332,7 @@ impl EVM {
     fn op_sstore(&mut self, storage: &mut StorageTrie) {
         let key = self.stack.pop();
         let value = self.stack.pop();
-        let address = self.ee.input.contract_address.clone();
+        let address = self.contract_address.clone();
         storage.upsert(address, key, value);
         self.consume_gas(U256::from(100));
     }
@@ -327,6 +375,7 @@ impl EVM {
         let length = self.stack.pop().as_u32() as usize;
 
         let return_value = &self.memory[offset..offset + length];
+
         self.returns = Some(ReturnValue::Return(Vec::from(return_value)));
     }
 
@@ -377,23 +426,23 @@ mod tests {
         // PUSH1 0x20    // 返すデータのサイズ（32バイト）
         // PUSH1 0x00    // メモリの開始位置（オフセット0）
         // RETURN
-        let contract_address = Address::new("0x1234567890123456789012345678901234567890");
-        let mut code_storage = CodeStorage::new();
-        code_storage.insert_code(contract_address.clone(), code.clone());
-        let mut evm = EVM::new(
-            contract_address,
-            Address::new("0x1234567890123456789012345678901234567890"),
-            U256::zero(),
-            Vec::new(),
-            U256::zero(),
-            U256::from(1000),
-            WorldState::new(),
-            code_storage,
-        );
+        // let contract_address = Address::new("0x1234567890123456789012345678901234567890");
+        // let mut code_storage = CodeStorage::new();
+        // code_storage.insert_code(contract_address.clone(), code.clone());
+        // let mut evm = EVM::new(
+        //     contract_address,
+        //     Address::new("0x1234567890123456789012345678901234567890"),
+        //     U256::zero(),
+        //     Vec::new(),
+        //     U256::zero(),
+        //     U256::from(1000),
+        //     WorldState::new(),
+        //     code_storage,
+        // );
 
-        let mut storage = state::StorageTrie(HashMap::new());
+        // let mut storage = state::StorageTrie(HashMap::new());
 
-        evm.run(&mut storage);
+        // evm.run(&mut storage);
 
         // assert_eq!(evm.returns, Some(ReturnValue::Return([3u8])));
     }

@@ -1,5 +1,6 @@
 mod evm;
 mod state;
+mod util;
 use primitive_types::U256;
 use std::collections::HashMap;
 
@@ -57,11 +58,4 @@ fn main() {
     }
 
     println!("Gas: {}", evm.gas);
-}
-
-fn hex_to_vec(hex: &str) -> Result<Vec<u8>, String> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
 }

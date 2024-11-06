@@ -11,6 +11,7 @@ regex = "1.10.3"
 nom = "7.1.1"
 nom_locate = "4.1.0"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
+rlp = "0.6.1"
 
 [[bin]]
 name = "compiler"

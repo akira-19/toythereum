@@ -2,6 +2,7 @@ use primitive_types::U256;
 use regex::Regex;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
 pub struct WorldState {
     accounts: HashMap<Address, AccountState>,
 }
@@ -22,9 +23,9 @@ impl WorldState {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct AccountState {
-    nonce: U256,
+    pub nonce: U256,
     balance: U256,
     storage_root: U256, // merkle root of the storage trie
     pub code_hash: Vec<u8>,
@@ -61,6 +62,10 @@ impl Address {
             panic!("Invalid address format");
         }
         Address(s.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

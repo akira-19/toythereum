@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fs::File,
     io::{Read, Write},
+    vec,
 };
 
 use primitive_types::U256;
@@ -27,6 +28,8 @@ pub enum OpCode {
 
     CalldataLoad = 0x35,
 
+    CodeCopy = 0x39,
+
     MLoad = 0x51,
     MStore = 0x52,
     SLoad = 0x54,
@@ -35,8 +38,11 @@ pub enum OpCode {
     JumpI = 0x57,
     JumpDest = 0x5B,
 
+    Push0 = 0x5F,
     Push1 = 0x60,
     Push32 = 0x7F,
+
+    Dup1 = 0x80,
 
     Return = 0xF3,
     Revert = 0xFD,
@@ -60,10 +66,11 @@ macro_rules! impl_op_from {
 
 impl_op_from!(Stop, Add, MStore, Push1, Return);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArgValue {
     U256(U256),
     FnSelector([u8; 4]),
+    CodeLength,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -139,12 +146,13 @@ struct Function<'a> {
     args: Vec<Arg>,
     memories: HashMap<String, MemoryVariableTable>,
     memory_pointer: U256,
+    selector: [u8; 4],
 }
 
 struct Compiler<'a> {
     literals: Vec<Value>,
     instructions: Vec<Instruction>,
-    funcs: HashMap<[u8; 4], Function<'a>>,
+    funcs: Vec<Function<'a>>,
     storages: HashMap<String, StorageVariableTable>,
     slot: U256,
     pc: usize,
@@ -155,14 +163,14 @@ impl<'a> Compiler<'a> {
         Self {
             literals: vec![],
             instructions: vec![],
-            funcs: HashMap::new(),
+            funcs: vec![],
             storages: HashMap::new(),
             slot: U256::zero(),
             pc: 0,
         }
     }
 
-    /// Returns absolute position of inserted value
+    // Returns absolute position of inserted value
     fn add_inst(&mut self, op: OpCode, arg0: Option<ArgValue>) -> InstPtr {
         let inst = self.instructions.len();
         self.instructions.push(Instruction::new(op, arg0));
@@ -563,25 +571,25 @@ impl<'a> Compiler<'a> {
                     let arg_types = args.iter().map(|arg| arg.1.type_name()).collect::<Vec<_>>();
                     let selector = create_func_selector(func, arg_types);
 
-                    self.add_inst(
-                        OpCode::Push32,
-                        Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
-                    );
-                    // get func selector from calldata
-                    self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
-                    self.add_inst(OpCode::CalldataLoad, None);
-                    self.add_inst(OpCode::SHR, None);
+                    // self.add_inst(
+                    //     OpCode::Push32,
+                    //     Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
+                    // );
+                    // // get func selector from calldata
+                    // self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
+                    // self.add_inst(OpCode::CalldataLoad, None);
+                    // self.add_inst(OpCode::SHR, None);
 
-                    // add this function's selector to the stack and compare
-                    self.add_inst(
-                        OpCode::Push32,
-                        Some(ArgValue::U256(U256::from_big_endian(&selector))),
-                    );
-                    self.add_inst(OpCode::EQ, None);
+                    // // add this function's selector to the stack and compare
+                    // self.add_inst(
+                    //     OpCode::Push32,
+                    //     Some(ArgValue::U256(U256::from_big_endian(&selector))),
+                    // );
+                    // self.add_inst(OpCode::EQ, None);
 
-                    // if the selector is equal, jmp
-                    self.add_inst(OpCode::Push32, Some(ArgValue::FnSelector(selector)));
-                    self.add_inst(OpCode::JumpI, None);
+                    // // if the selector is equal, jmp
+                    // self.add_inst(OpCode::Push32, Some(ArgValue::FnSelector(selector)));
+                    // self.add_inst(OpCode::JumpI, None);
 
                     // save the func temporarily
                     let fn_args = args
@@ -597,9 +605,10 @@ impl<'a> Compiler<'a> {
                         args: fn_args,
                         memories: HashMap::new(),
                         memory_pointer: U256::from_str_radix("80", 16)?,
+                        selector,
                     };
 
-                    self.funcs.insert(selector, func);
+                    self.funcs.push(func);
                 }
                 Statement::Return(ex) => {
                     let res = self.compile_expr(ex, selector)?;
@@ -646,6 +655,57 @@ impl<'a> Compiler<'a> {
         self.init_memory()?;
         self.compile_stmts(stmts, None)?;
 
+        // add code deploy instructions
+        // [16] PUSH2 0x0143
+        // [17] DUP1
+        // [18] PUSH2 0x0020
+        // [19] PUSH0 0x
+        // [20] CODECOPY
+        // [21] PUSH0 0x
+        // [22] RETURN
+        self.add_inst(OpCode::Push32, Some(ArgValue::CodeLength));
+        self.add_inst(OpCode::Dup1, None);
+
+        let mut offset: u32 = self.calc_code_length();
+
+        offset += 37; // 37 is the size of the instructions from push offset to return
+
+        self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(offset))));
+        self.add_inst(OpCode::Push0, None);
+        self.add_inst(OpCode::CodeCopy, None);
+        self.add_inst(OpCode::Push0, None);
+        self.add_inst(OpCode::Return, None);
+
+        // *****************************************************
+        // following code is for the deployed contract code
+        // *****************************************************
+        self.init_memory()?;
+
+        for func in self.funcs.clone() {
+            self.add_inst(
+                OpCode::Push32,
+                Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
+            );
+            // get func selector from calldata
+            self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
+            self.add_inst(OpCode::CalldataLoad, None);
+            self.add_inst(OpCode::SHR, None);
+
+            // add this function's selector to the stack and compare
+            self.add_inst(
+                OpCode::Push32,
+                Some(ArgValue::U256(U256::from_big_endian(&func.selector))),
+            );
+            self.add_inst(OpCode::EQ, None);
+
+            // if the selector is equal, jmp
+            self.add_inst(
+                OpCode::Push32,
+                Some(ArgValue::FnSelector(func.selector.clone())),
+            );
+            self.add_inst(OpCode::JumpI, None);
+        }
+
         // no function matched
         // not loading the memory for now
         self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(0))));
@@ -653,9 +713,18 @@ impl<'a> Compiler<'a> {
         self.add_inst(OpCode::Revert, None);
 
         // compile the functions
-        for (selector, _) in self.funcs.clone().iter() {
-            self.compile_func(*selector)?;
+        for func in self.funcs.clone() {
+            self.compile_func(func.selector)?;
         }
+
+        let code_length = self.calc_code_length() - offset;
+
+        self.instructions.iter_mut().for_each(|inst| {
+            if inst.arg0 == Some(ArgValue::CodeLength) {
+                inst.arg0 = Some(ArgValue::U256(U256::from(code_length)));
+            }
+        });
+
         for inst in &self.instructions {
             println!("{:?}", inst);
         }
@@ -666,11 +735,29 @@ impl<'a> Compiler<'a> {
         &mut self,
         selector: [u8; 4],
     ) -> Result<&mut Function<'a>, Box<dyn std::error::Error>> {
-        if let Some(func) = self.funcs.get_mut(&selector) {
+        if let Some(func) = self.funcs.iter_mut().find(|f| f.selector == selector) {
             Ok(func)
         } else {
             Err("Function not found".into())
         }
+    }
+
+    fn calc_code_length(&self) -> u32 {
+        self.instructions
+            .clone()
+            .iter()
+            .map(|inst| {
+                let mut size = 1;
+                if let Some(ArgValue::U256(_)) = inst.arg0 {
+                    size += 32;
+                } else if let Some(ArgValue::CodeLength) = inst.arg0 {
+                    size += 32;
+                } else if let Some(ArgValue::FnSelector(_)) = inst.arg0 {
+                    size += 32;
+                }
+                size
+            })
+            .sum()
     }
 
     fn init_memory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
