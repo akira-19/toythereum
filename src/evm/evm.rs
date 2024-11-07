@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{state::*, util::calculate_contract_address};
+use crate::{
+    state::*,
+    util::{calculate_contract_address, keccak256},
+};
 use primitive_types::U256;
 
 pub struct EVM {
@@ -25,8 +28,8 @@ pub struct Input {
 pub struct ExecutionEnvironment {
     input: Input,
     gas: U256,
-    state: WorldState,
-    code: CodeStorage,
+    state: &mut WorldState,
+    code: &mut CodeStorage,
 }
 
 impl ExecutionEnvironment {
@@ -37,8 +40,8 @@ impl ExecutionEnvironment {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: WorldState,
-        code: CodeStorage,
+        state: &mut WorldState,
+        code: &mut CodeStorage,
     ) -> ExecutionEnvironment {
         ExecutionEnvironment {
             input: Input {
@@ -95,8 +98,8 @@ impl EVM {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: WorldState,
-        code: CodeStorage,
+        state: &mut WorldState,
+        code: &mut CodeStorage,
     ) -> EVM {
         let state_copy = state.clone();
         let account = state_copy.get_account(&from.clone()).unwrap();
@@ -139,7 +142,7 @@ impl EVM {
         }
     }
 
-    pub fn run(&mut self, mut storage: &mut StorageTrie) {
+    pub fn run(&mut self, storage: &mut StorageTrie, code_storage: &mut CodeStorage) {
         let to = self.ee.input.to.clone();
 
         let initial_node;
@@ -151,6 +154,10 @@ impl EVM {
         } else {
             initial_node = HashMap::new();
             self.code = self.ee.input.calldata.clone();
+            let new_account = AccountState::new();
+            self.ee
+                .state
+                .upsert(self.contract_address.clone(), new_account);
         }
 
         loop {
@@ -187,7 +194,7 @@ impl EVM {
                 0x5F => self.op_push0(),
                 0x60 => self.op_push(1),
                 0x7F => self.op_push(32),
-                0xF3 => self.op_return(),
+                0xF3 => self.op_return(code_storage),
                 0xFD => self.op_revert(),
                 _ => panic!("Invalid opcode"),
             }
@@ -370,11 +377,17 @@ impl EVM {
         self.consume_gas(U256::from(3));
     }
 
-    fn op_return(&mut self) {
+    fn op_return(&mut self, code_storage: &mut CodeStorage) {
         let offset = self.stack.pop().as_u32() as usize;
         let length = self.stack.pop().as_u32() as usize;
 
         let return_value = &self.memory[offset..offset + length];
+
+        if self.ee.input.to == None {
+            let account = self.ee.state.get_account(&self.contract_address).unwrap();
+            account.code_hash = keccak256(return_value);
+            code_storage.insert_code(self.contract_address.clone(), return_value.to_vec());
+        }
 
         self.returns = Some(ReturnValue::Return(Vec::from(return_value)));
     }

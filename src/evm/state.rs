@@ -26,8 +26,8 @@ impl WorldState {
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct AccountState {
     pub nonce: U256,
-    balance: U256,
-    storage_root: U256, // merkle root of the storage trie
+    pub balance: U256,
+    pub storage_root: U256, // merkle root of the storage trie
     pub code_hash: Vec<u8>,
 }
 

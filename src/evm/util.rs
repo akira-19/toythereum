@@ -3,6 +3,14 @@ use tiny_keccak::{Hasher, Keccak};
 
 use crate::state::Address;
 
+pub fn keccak256(data: &[u8]) -> Vec<u8> {
+    let mut hasher = Keccak::v256();
+    let mut output = [0u8; 32];
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    output.to_vec()
+}
+
 pub fn hex_to_vec(hex: &str) -> Result<Vec<u8>, String> {
     let hex_string;
     if hex.starts_with("0x") {
