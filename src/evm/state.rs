@@ -18,7 +18,11 @@ impl WorldState {
         self.accounts.get(address)
     }
 
-    pub fn insert_account(&mut self, address: Address, account: AccountState) {
+    pub fn get_mut_account(&mut self, address: &Address) -> Option<&mut AccountState> {
+        self.accounts.get_mut(address)
+    }
+
+    pub fn upsert_account(&mut self, address: Address, account: AccountState) {
         self.accounts.insert(address, account);
     }
 }

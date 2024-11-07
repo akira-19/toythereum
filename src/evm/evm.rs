@@ -28,8 +28,7 @@ pub struct Input {
 pub struct ExecutionEnvironment {
     input: Input,
     gas: U256,
-    state: &mut WorldState,
-    code: &mut CodeStorage,
+    state: WorldState,
 }
 
 impl ExecutionEnvironment {
@@ -40,8 +39,7 @@ impl ExecutionEnvironment {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: &mut WorldState,
-        code: &mut CodeStorage,
+        state: WorldState,
     ) -> ExecutionEnvironment {
         ExecutionEnvironment {
             input: Input {
@@ -52,8 +50,7 @@ impl ExecutionEnvironment {
                 value: value,
             },
             gas: gas,
-            state: state,
-            code: code,
+            state,
         }
     }
 }
@@ -98,8 +95,7 @@ impl EVM {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: &mut WorldState,
-        code: &mut CodeStorage,
+        state: WorldState,
     ) -> EVM {
         let state_copy = state.clone();
         let account = state_copy.get_account(&from.clone()).unwrap();
@@ -115,16 +111,7 @@ impl EVM {
             gas,
             returns: None,
             code: Vec::new(),
-            ee: ExecutionEnvironment::new(
-                from.clone(),
-                to,
-                gas_price,
-                calldata,
-                value,
-                gas,
-                state,
-                code,
-            ),
+            ee: ExecutionEnvironment::new(from.clone(), to, gas_price, calldata, value, gas, state),
             contract_address,
         }
     }
@@ -148,16 +135,16 @@ impl EVM {
         let initial_node;
 
         if let Some(contract) = to {
-            self.code = self.ee.code.get_code(&contract).unwrap().to_vec();
+            self.code = code_storage.get_code(&contract).unwrap().to_vec();
             initial_node = storage.get(&contract).clone();
-            self.code = self.ee.code.get_code(&contract).unwrap().to_vec();
+            self.code = code_storage.get_code(&contract).unwrap().to_vec();
         } else {
             initial_node = HashMap::new();
             self.code = self.ee.input.calldata.clone();
             let new_account = AccountState::new();
             self.ee
                 .state
-                .upsert(self.contract_address.clone(), new_account);
+                .upsert_account(self.contract_address.clone(), new_account);
         }
 
         loop {
@@ -180,7 +167,7 @@ impl EVM {
 
                 0x35 => self.op_calldataload(),
 
-                0x39 => self.op_codecopy(),
+                0x39 => self.op_codecopy(code_storage),
 
                 0x51 => self.op_mload(),
                 0x52 => self.op_mstore(),
@@ -287,11 +274,11 @@ impl EVM {
         self.consume_gas(U256::from(3));
     }
 
-    fn op_codecopy(&mut self) {
+    fn op_codecopy(&mut self, code_storage: &CodeStorage) {
         let dest_offset = self.stack.pop().as_u32() as usize;
         let offset = self.stack.pop().as_u32() as usize;
         let length = self.stack.pop().as_u32() as usize;
-        let code = self.ee.code.get_code(&self.contract_address).unwrap();
+        let code = code_storage.get_code(&self.contract_address).unwrap();
         let code_slice = &code[offset..offset + length];
         let current_memory_size = (self.memory.len() + 31) / 32;
 
@@ -384,8 +371,12 @@ impl EVM {
         let return_value = &self.memory[offset..offset + length];
 
         if self.ee.input.to == None {
-            let account = self.ee.state.get_account(&self.contract_address).unwrap();
-            account.code_hash = keccak256(return_value);
+            let account = &mut self
+                .ee
+                .state
+                .get_mut_account(&self.contract_address)
+                .unwrap();
+            account.code_hash = keccak256(&return_value.to_vec());
             code_storage.insert_code(self.contract_address.clone(), return_value.to_vec());
         }
 
