@@ -2,8 +2,9 @@ use std::{
     collections::HashMap,
     env,
     error::Error,
-    fs::File,
+    fs::{self, File},
     io::{Read, Write},
+    path::Path,
     vec,
 };
 
@@ -847,6 +848,8 @@ pub fn standard_functions<'src>() -> Functions<'src> {
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
+    println!("{:?}", args);
+
     if args.len() < 2 {
         eprintln!("no file name provided");
         std::process::exit(1);
@@ -866,7 +869,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let hex_string: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
-    println!("{}", hex_string);
+
+    fs::create_dir_all("bytecode")?;
+
+    let path_without_extension = file_name.strip_suffix(".sol").unwrap();
+    let position = path_without_extension.rfind('/').unwrap();
+    let file = &path_without_extension[(position + 1)..];
+    let path = format!("bytecode/{}", file);
+
+    fs::write(path, hex_string)?;
 
     Ok(())
 }
