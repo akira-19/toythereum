@@ -36,7 +36,7 @@ pub struct AccountState {
 }
 
 pub struct CodeStorage {
-    code: HashMap<Address, Vec<u8>>,
+    pub code: HashMap<Address, Vec<u8>>,
 }
 
 impl CodeStorage {

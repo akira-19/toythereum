@@ -181,6 +181,9 @@ impl EVM {
                 0x5F => self.op_push0(),
                 0x60 => self.op_push(1),
                 0x7F => self.op_push(32),
+
+                0x80 => self.op_dup(1),
+
                 0xF3 => self.op_return(code_storage),
                 0xFD => self.op_revert(),
                 _ => panic!("Invalid opcode"),
@@ -278,19 +281,21 @@ impl EVM {
         let dest_offset = self.stack.pop().as_u32() as usize;
         let offset = self.stack.pop().as_u32() as usize;
         let length = self.stack.pop().as_u32() as usize;
-        let code = code_storage.get_code(&self.contract_address).unwrap();
+        // let code = code_storage.get_code(&self.contract_address).unwrap();
+        let code = self.ee.input.calldata.clone();
         let code_slice = &code[offset..offset + length];
-        let current_memory_size = (self.memory.len() + 31) / 32;
+
+        let current_memory_size = ((self.memory.len() + 31) / 32) as u32;
 
         // TODO: need to check if the code size is longer than the current memory size
         for (i, byte) in code_slice.iter().enumerate() {
             self.memory.insert(dest_offset + i, *byte);
         }
 
-        let new_memory_size = (self.memory.len() + 31) / 32;
+        let new_memory_size = ((self.memory.len() + 31) / 32) as u32;
 
         // TODO: need to check the gas cost calculation
-        let memory_expansion_cost = (new_memory_size ^ 2 - current_memory_size ^ 2) / 512
+        let memory_expansion_cost = (new_memory_size.pow(2) - current_memory_size.pow(2)) / 512
             + 3 * (new_memory_size - current_memory_size);
 
         let gas_cost = 3 + 3 * new_memory_size + memory_expansion_cost;
@@ -352,7 +357,6 @@ impl EVM {
 
     fn op_push0(&mut self) {
         self.stack.push(U256::from(0));
-        self.pc += 1;
         self.consume_gas(U256::from(2));
     }
 
@@ -360,6 +364,12 @@ impl EVM {
         let value = U256::from_big_endian(&self.code[self.pc + 1..self.pc + 1 + length]);
 
         self.pc += length;
+        self.stack.push(value);
+        self.consume_gas(U256::from(3));
+    }
+
+    fn op_dup(&mut self, n: usize) {
+        let value = self.stack.data[self.stack.sp - n];
         self.stack.push(value);
         self.consume_gas(U256::from(3));
     }

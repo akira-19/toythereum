@@ -3,11 +3,11 @@ mod state;
 mod util;
 use primitive_types::U256;
 use std::collections::HashMap;
-use util::hex_to_vec;
+use util::{hex_to_vec, vec_to_hex};
 
 fn main() {
     let mut ws = state::WorldState::new();
-    let mut account = state::AccountState::new();
+    let account = state::AccountState::new();
     ws.upsert_account(
         state::Address::new("0x1234567890abcdef1234567890abcdef12345678"),
         account,
@@ -48,6 +48,11 @@ fn main() {
         }
     } else {
         println!("No return value");
+    }
+
+    // output code storage
+    for (k, v) in code_storage.code.iter() {
+        println!("CodeStorage: {:?} {:?}", k, vec_to_hex(v.clone()));
     }
 
     println!("Gas: {}", evm.gas);
