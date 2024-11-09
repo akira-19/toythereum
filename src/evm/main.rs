@@ -29,32 +29,24 @@ fn init_state() -> state::WorldState {
     ws
 }
 
-// fn receive_transaction(input: TxInput) -> evm::EVM {
-//     evm::EVM::new(
-//         input.from,
-//         input.to,
-//         input.value,
-//         input.data,
-//         input.gas_limit,
-//         input.gas_price,
-//         ws,
-//     )
-// }
-
 fn main() {
     let mut ws = init_state();
     let mut code_storage = state::CodeStorage::new();
     let mut storage = state::StorageTrie(HashMap::new());
 
-    // let mut calldata = 3405006467u32.to_be_bytes().to_vec();
-    // let attr = U256::from(11).to_big_endian().to_vec();
-    // calldata.extend(attr);
-
     let mut line = String::new();
     while io::stdin().read_line(&mut line).unwrap() > 0 {
         // read json
-        if line.ends_with(".json") {
-            let file = File::open(line.clone()).unwrap();
+        if line.trim().ends_with(".json") {
+            let file = File::open(line.trim());
+            let file = match file {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("Error: {:?}", e);
+                    line.clear();
+                    continue;
+                }
+            };
             let reader = BufReader::new(file);
 
             let input: TxInput = serde_json::from_reader(reader).unwrap();
@@ -66,10 +58,14 @@ fn main() {
                 hex_to_vec(input.data.as_str()).unwrap(),
                 input.value,
                 input.gas_limit,
-                ws.clone(),
             );
 
-            evm.run(&mut storage, &mut code_storage);
+            evm.run(&mut storage, &mut code_storage, &mut ws);
+
+            println!(
+                "Contract Address: {:?}",
+                evm.contract_address.clone().unwrap()
+            );
 
             if let Some(ret) = evm.get_returns() {
                 match ret {

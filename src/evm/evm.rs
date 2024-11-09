@@ -14,7 +14,7 @@ pub struct EVM {
     returns: Option<ReturnValue>,
     code: Vec<u8>,
     ee: ExecutionEnvironment,
-    contract_address: Address,
+    pub contract_address: Option<Address>,
 }
 
 pub struct Input {
@@ -28,7 +28,6 @@ pub struct Input {
 pub struct ExecutionEnvironment {
     input: Input,
     gas: U256,
-    state: WorldState,
 }
 
 impl ExecutionEnvironment {
@@ -39,7 +38,6 @@ impl ExecutionEnvironment {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: WorldState,
     ) -> ExecutionEnvironment {
         ExecutionEnvironment {
             input: Input {
@@ -50,7 +48,6 @@ impl ExecutionEnvironment {
                 value: value,
             },
             gas: gas,
-            state,
         }
     }
 }
@@ -95,15 +92,7 @@ impl EVM {
         calldata: Vec<u8>,
         value: U256,
         gas: U256,
-        state: WorldState,
     ) -> EVM {
-        let state_copy = state.clone();
-        let account = state_copy.get_account(&from.clone()).unwrap();
-        let contract_address = if let Some(contract) = to.clone() {
-            contract
-        } else {
-            calculate_contract_address(from.clone(), U256::low_u64(&account.nonce))
-        };
         EVM {
             stack: Stack::new(),
             memory: vec![0u8; 128],
@@ -111,8 +100,8 @@ impl EVM {
             gas,
             returns: None,
             code: Vec::new(),
-            ee: ExecutionEnvironment::new(from.clone(), to, gas_price, calldata, value, gas, state),
-            contract_address,
+            ee: ExecutionEnvironment::new(from.clone(), to, gas_price, calldata, value, gas),
+            contract_address: None,
         }
     }
 
@@ -129,8 +118,23 @@ impl EVM {
         }
     }
 
-    pub fn run(&mut self, storage: &mut StorageTrie, code_storage: &mut CodeStorage) {
+    pub fn run(
+        &mut self,
+        storage: &mut StorageTrie,
+        code_storage: &mut CodeStorage,
+        state: &mut WorldState,
+    ) {
         let to = self.ee.input.to.clone();
+
+        let contract_address = if let Some(contract) = to.clone() {
+            contract
+        } else {
+            let from = self.ee.input.from.clone();
+            let state_clone = state.clone();
+            let account = state_clone.get_account(&from.clone()).unwrap();
+            calculate_contract_address(from, U256::low_u64(&account.nonce))
+        };
+        self.contract_address = Some(contract_address.clone());
 
         let initial_node;
 
@@ -142,9 +146,7 @@ impl EVM {
             initial_node = HashMap::new();
             self.code = self.ee.input.calldata.clone();
             let new_account = AccountState::new();
-            self.ee
-                .state
-                .upsert_account(self.contract_address.clone(), new_account);
+            state.upsert_account(self.contract_address.clone().unwrap(), new_account);
         }
 
         loop {
@@ -184,7 +186,7 @@ impl EVM {
 
                 0x80 => self.op_dup(1),
 
-                0xF3 => self.op_return(code_storage),
+                0xF3 => self.op_return(code_storage, state),
                 0xFD => self.op_revert(),
                 _ => panic!("Invalid opcode"),
             }
@@ -198,7 +200,7 @@ impl EVM {
             match self.returns {
                 Some(ReturnValue::Return(_)) => break,
                 Some(ReturnValue::Revert(_)) => {
-                    storage.rollback(&self.contract_address, initial_node);
+                    storage.rollback(&self.contract_address.clone().unwrap(), initial_node);
                     break;
                 }
                 Some(ReturnValue::Stop) => break,
@@ -323,7 +325,7 @@ impl EVM {
 
     fn op_sload(&mut self, storage: &StorageTrie) {
         let key = self.stack.pop();
-        let value = storage.get_value(&self.contract_address, key);
+        let value = storage.get_value(&self.contract_address.clone().unwrap(), key);
         self.stack.push(value);
         self.consume_gas(U256::from(100));
     }
@@ -331,7 +333,7 @@ impl EVM {
     fn op_sstore(&mut self, storage: &mut StorageTrie) {
         let key = self.stack.pop();
         let value = self.stack.pop();
-        let address = self.contract_address.clone();
+        let address = self.contract_address.clone().unwrap();
         storage.upsert(address, key, value);
         self.consume_gas(U256::from(100));
     }
@@ -374,20 +376,21 @@ impl EVM {
         self.consume_gas(U256::from(3));
     }
 
-    fn op_return(&mut self, code_storage: &mut CodeStorage) {
+    fn op_return(&mut self, code_storage: &mut CodeStorage, state: &mut WorldState) {
         let offset = self.stack.pop().as_u32() as usize;
         let length = self.stack.pop().as_u32() as usize;
 
         let return_value = &self.memory[offset..offset + length];
 
         if self.ee.input.to == None {
-            let account = &mut self
-                .ee
-                .state
-                .get_mut_account(&self.contract_address)
+            let account = state
+                .get_mut_account(&self.contract_address.clone().unwrap())
                 .unwrap();
             account.code_hash = keccak256(&return_value.to_vec());
-            code_storage.insert_code(self.contract_address.clone(), return_value.to_vec());
+            code_storage.insert_code(
+                self.contract_address.clone().unwrap(),
+                return_value.to_vec(),
+            );
         }
 
         self.returns = Some(ReturnValue::Return(Vec::from(return_value)));

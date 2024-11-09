@@ -572,26 +572,6 @@ impl<'a> Compiler<'a> {
                     let arg_types = args.iter().map(|arg| arg.1.type_name()).collect::<Vec<_>>();
                     let selector = create_func_selector(func, arg_types);
 
-                    // self.add_inst(
-                    //     OpCode::Push32,
-                    //     Some(ArgValue::U256(U256::from_str_radix("E0", 16).unwrap())),
-                    // );
-                    // // get func selector from calldata
-                    // self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::zero())));
-                    // self.add_inst(OpCode::CalldataLoad, None);
-                    // self.add_inst(OpCode::SHR, None);
-
-                    // // add this function's selector to the stack and compare
-                    // self.add_inst(
-                    //     OpCode::Push32,
-                    //     Some(ArgValue::U256(U256::from_big_endian(&selector))),
-                    // );
-                    // self.add_inst(OpCode::EQ, None);
-
-                    // // if the selector is equal, jmp
-                    // self.add_inst(OpCode::Push32, Some(ArgValue::FnSelector(selector)));
-                    // self.add_inst(OpCode::JumpI, None);
-
                     // save the func temporarily
                     let fn_args = args
                         .iter()
