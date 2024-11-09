@@ -1,5 +1,6 @@
 use primitive_types::U256;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -55,7 +56,7 @@ impl CodeStorage {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Debug, Clone)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Address(String);
 
 impl Address {
