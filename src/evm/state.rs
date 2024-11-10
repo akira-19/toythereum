@@ -36,6 +36,7 @@ pub struct AccountState {
     pub code_hash: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CodeStorage {
     pub code: HashMap<Address, Vec<u8>>,
 }

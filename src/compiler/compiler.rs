@@ -636,14 +636,6 @@ impl<'a> Compiler<'a> {
         self.init_memory()?;
         self.compile_stmts(stmts, None)?;
 
-        // add code deploy instructions
-        // [16] PUSH2 0x0143
-        // [17] DUP1
-        // [18] PUSH2 0x0020
-        // [19] PUSH0 0x
-        // [20] CODECOPY
-        // [21] PUSH0 0x
-        // [22] RETURN
         self.add_inst(OpCode::Push32, Some(ArgValue::CodeLength));
         self.add_inst(OpCode::Dup1, None);
 

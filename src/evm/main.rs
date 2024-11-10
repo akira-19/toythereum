@@ -73,7 +73,7 @@ fn main() {
                         println!("Revert: {:?}", v);
                     }
                     evm::ReturnValue::Return(v) => {
-                        println!("Return: {:?}", v);
+                        println!("Return: {:?}", vec_to_hex(v));
                     }
                     evm::ReturnValue::Stop => {
                         println!("Stop");
@@ -83,6 +83,7 @@ fn main() {
                 println!("No return value");
             }
         }
+
         line.clear();
     }
 
