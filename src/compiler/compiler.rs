@@ -4,7 +4,6 @@ use std::{
     error::Error,
     fs::{self, File},
     io::{Read, Write},
-    path::Path,
     vec,
 };
 
@@ -151,7 +150,6 @@ struct Function<'a> {
 }
 
 struct Compiler<'a> {
-    literals: Vec<Value>,
     instructions: Vec<Instruction>,
     funcs: Vec<Function<'a>>,
     storages: HashMap<String, StorageVariableTable>,
@@ -162,7 +160,6 @@ struct Compiler<'a> {
 impl<'a> Compiler<'a> {
     fn new() -> Self {
         Self {
-            literals: vec![],
             instructions: vec![],
             funcs: vec![],
             storages: HashMap::new(),
@@ -652,6 +649,7 @@ impl<'a> Compiler<'a> {
         // *****************************************************
         // following code is for the deployed contract code
         // *****************************************************
+        self.pc = 0;
         self.init_memory()?;
 
         for func in self.funcs.clone() {
