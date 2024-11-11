@@ -22,3 +22,7 @@ path = "src/compiler/main.rs"
 [[bin]]
 name = "evm"
 path = "src/evm/main.rs"
+
+[[bin]]
+name = "selector"
+path = "src/function_selector/main.rs"
