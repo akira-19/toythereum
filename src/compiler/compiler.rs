@@ -229,7 +229,7 @@ impl<'a> Compiler<'a> {
             self.add_inst(OpCode::MStore, None);
             Ok(())
         } else {
-            Err(format!("Variable not found: {name:?}").into())
+            Err(format!("update_memory: Variable not found: {name:?}").into())
         }
     }
 
@@ -515,7 +515,7 @@ impl<'a> Compiler<'a> {
                     self.load_storage(&v)?;
                     return Ok(Valuable::Undetermined(v.value_type));
                 } else {
-                    return Err(format!("Variable not found: {ident:?}").into());
+                    return Err(format!("Identifier not found: {ident:?}").into());
                 };
             }
             ExprEnum::Add(lhs, rhs) => self.bin_op(OpCode::Add, lhs, rhs, selector)?,
@@ -553,7 +553,10 @@ impl<'a> Compiler<'a> {
                     let result = self.compile_expr(ex, selector)?;
                     let var_name = name.fragment().to_string();
                     if let Some(selector) = selector {
-                        self.update_memory(var_name.clone(), &result, selector)?;
+                        let res = self.update_memory(var_name.clone(), &result, selector);
+                        if let Ok(_) = res {
+                            continue;
+                        }
                     }
 
                     if let Some(_) = self.storages.get(&var_name) {
@@ -638,7 +641,7 @@ impl<'a> Compiler<'a> {
 
         let mut offset: u32 = self.calc_code_length();
 
-        offset += 37; // 37 is the size of the instructions from push offset to return
+        offset += 37; // 37 is the size of the instructions from push offset to return(the following instructions)
 
         self.add_inst(OpCode::Push32, Some(ArgValue::U256(U256::from(offset))));
         self.add_inst(OpCode::Push0, None);
@@ -834,10 +837,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     src_file.read_to_string(&mut source)?;
 
     let mut buf = vec![];
-    if let Err(e) = compile(&mut std::io::Cursor::new(&mut buf), source) {
-        eprintln!("Compile Error: {e}");
-        return Ok(());
-    }
+    compile(&mut std::io::Cursor::new(&mut buf), source)?;
+
     let hex_string: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
 
     fs::create_dir_all("bytecode")?;

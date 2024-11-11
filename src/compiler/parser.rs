@@ -337,8 +337,24 @@ pub fn type_check<'src>(
             }
             Statement::VarAssign { name, ex, .. } => {
                 let init_type = tc_expr(ex, ctx)?;
-                let target = ctx.vars.get(**name).expect("Variable not found");
-                tc_check_type(&init_type, &Some(*target), ex.span)?;
+                let target = ctx.vars.get(**name);
+                if let Some(target) = target {
+                    tc_check_type(&init_type, &Some(*target), ex.span)?;
+                } else {
+                    let target = ctx
+                        .super_context
+                        .unwrap()
+                        .vars
+                        .get(**name)
+                        .expect("Variable not found");
+                    tc_check_type(&init_type, &Some(*target), ex.span)?;
+                    // return Err(TypeCheckError::new(
+                    //     format!("Variable \"{}\" not found in scope", name),
+                    //     ex.span,
+                    // ));
+                }
+                // let target = ctx.vars.get(**name).expect("Variable not found");
+                // tc_check_type(&init_type, &Some(*target), ex.span)?;
             }
             Statement::FnDef {
                 name,
@@ -722,6 +738,7 @@ fn var_def(i: Span) -> IResult<Span, Statement> {
 }
 
 fn var_assign(i: Span) -> IResult<Span, Statement> {
+    println!("var_assign {:?}", i.fragment());
     let span = i;
     let (i, name) = space_delimited(identifier)(i)?;
     let (i, _) = space_delimited(char('='))(i)?;
@@ -750,7 +767,8 @@ fn type_decl(i: Span) -> IResult<Span, TypeDecl> {
             "uint256" => TypeDecl::Uint256,
             "string" => TypeDecl::Str,
             "bool" => TypeDecl::Bool,
-            _ => {
+            c => {
+                println!("type_decl: {:?}", c);
                 return Err(nom::Err::Failure(nom::error::Error::new(
                     td,
                     nom::error::ErrorKind::Verify,
@@ -814,8 +832,8 @@ fn general_statement<'a>() -> impl Fn(Span<'a>) -> IResult<Span<'a>, Statement> 
             fn_def_statement,
             terminated(return_statement, terminator),
             terminated(expr_statement, terminator),
-            var_def,
             var_assign,
+            var_def,
         ))(input)
     }
 }

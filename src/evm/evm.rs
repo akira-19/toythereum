@@ -39,6 +39,10 @@ impl ExecutionEnvironment {
         value: U256,
         gas: U256,
     ) -> ExecutionEnvironment {
+        let mut calldata = calldata;
+        if calldata.len() < 32 {
+            calldata.extend(vec![0u8; 32]);
+        }
         ExecutionEnvironment {
             input: Input {
                 from,
@@ -150,9 +154,7 @@ impl EVM {
         }
 
         loop {
-            println!("stack: {:?}", self.stack.data);
             let opcode = self.code[self.pc];
-            println!("opcode: {:02X}", opcode);
             match opcode {
                 0x00 => self.op_stop(),
                 0x01 => self.op_add(),
@@ -267,7 +269,6 @@ impl EVM {
     fn op_shr(&mut self) {
         let a = self.stack.pop();
         let b = self.stack.pop();
-        println!("a: {}, b: {}", a, b);
         self.stack.push(a >> b);
         self.consume_gas(U256::from(3));
     }
